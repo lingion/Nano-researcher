@@ -1,0 +1,16 @@
+{
+  "name": "search-mcp-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:worker": "wrangler dev --local --port 8789",
+    "start:stdio": "node src/stdio-server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.81.0"
+  }
+}

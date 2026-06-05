@@ -288,7 +288,7 @@ test('policy loop normalizes document numbers and promotes official_text after a
   assert.equal((result.decision.finalPackage as { status?: string } | undefined)?.status, 'FINAL_ASSERTION_STOP');
 });
 
-test('policy loop prunes low-value discovery history before the next agent decision while preserving full audit history', async () => {
+test('policy loop passes discovery history to the next agent decision while preserving full audit history', async () => {
   const seenStates: PolicyAgentState[] = [];
 
   let step = 0;
@@ -318,7 +318,7 @@ test('policy loop prunes low-value discovery history before the next agent decis
         }
 
         if (step === 2) {
-          assert.equal(state.discoveredCandidates.length, 2);
+          assert.equal(state.discoveredCandidates.length, 5);
           assert.equal(state.discoveredCandidates.every((candidate) => candidate.policy_grade === 'news_reprint'), true);
           return {
             decision: 'continue_fetch',
@@ -335,7 +335,7 @@ test('policy loop prunes low-value discovery history before the next agent decis
           };
         }
 
-        assert.equal(state.discoveredCandidates.length, 2);
+        assert.equal(state.discoveredCandidates.length, 5);
         return {
           decision: 'finalize',
           reasoning: 'Stop after validating the pruning boundary.',
@@ -378,12 +378,12 @@ test('policy loop prunes low-value discovery history before the next agent decis
   );
 
   assert.equal(step, 3);
-  assert.equal(seenStates[1]?.discoveredCandidates.length, 2);
+  assert.equal(seenStates[1]?.discoveredCandidates.length, 5);
   assert.equal(result.discoveredCandidates.length, 5);
   assert.equal((result.decision.finalPackage as { status?: string } | undefined)?.status, 'FINAL_ASSERTION_STOP');
 });
 
-test('policy loop keeps the highest-value non-official candidates in the pruned active view', async () => {
+test('policy loop keeps all non-official candidates in the active view', async () => {
   const seenStates: PolicyAgentState[] = [];
 
   let step = 0;
@@ -414,8 +414,8 @@ test('policy loop keeps the highest-value non-official candidates in the pruned 
 
         if (step === 2) {
           const activeIds = state.discoveredCandidates.map((candidate) => candidate.source);
-          assert.equal(state.discoveredCandidates.length, 2);
-          assert.deepEqual(activeIds, ['gov-interpretation', 'doc-news']);
+          assert.equal(state.discoveredCandidates.length, 4);
+          assert.deepEqual(activeIds, ['garbage-news', 'gov-interpretation', 'doc-news', 'gov-homepage']);
           return {
             decision: 'continue_fetch',
             reasoning: 'Fetch the retained document-bearing news item.',
@@ -432,8 +432,8 @@ test('policy loop keeps the highest-value non-official candidates in the pruned 
         }
 
         const activeIds = state.discoveredCandidates.map((candidate) => candidate.source);
-        assert.equal(state.discoveredCandidates.length, 2);
-        assert.deepEqual(activeIds, ['gov-interpretation', 'doc-news']);
+          assert.equal(state.discoveredCandidates.length, 4);
+        assert.deepEqual(activeIds, ['garbage-news', 'gov-interpretation', 'doc-news', 'gov-homepage']);
         return {
           decision: 'finalize',
           reasoning: 'Stop after validating evidence-aware pruning.',
@@ -511,11 +511,11 @@ test('policy loop keeps the highest-value non-official candidates in the pruned 
   );
 
   assert.equal(step, 3);
-  assert.equal(seenStates[1]?.discoveredCandidates.length, 2);
+  assert.equal(seenStates[1]?.discoveredCandidates.length, 4);
   assert.equal(result.discoveredCandidates.length, 4);
   assert.equal((result.decision.finalPackage as { status?: string } | undefined)?.status, 'FINAL_ASSERTION_STOP');
 });
-test('policy loop keeps the current-turn fetch target in the next active view even when its score is lowest', async () => {
+test('policy loop keeps every current-turn fetch target candidate visible after fetch', async () => {
   const targetGarbageUrl = 'https://garbage-media.com/noise.html';
   const seenStates: PolicyAgentState[] = [];
 
@@ -547,8 +547,8 @@ test('policy loop keeps the current-turn fetch target in the next active view ev
 
         if (step === 2) {
           const activeIds = state.discoveredCandidates.map((candidate) => candidate.source);
-          assert.equal(state.discoveredCandidates.length, 2);
-          assert.deepEqual(activeIds, ['high-interpretation', 'high-doc']);
+          assert.equal(state.discoveredCandidates.length, 3);
+          assert.deepEqual(activeIds, ['high-interpretation', 'high-doc', 'low-garbage']);
           return {
             decision: 'continue_fetch',
             reasoning: 'Probe the lowest-value candidate to preserve reasoning continuity.',
@@ -565,8 +565,8 @@ test('policy loop keeps the current-turn fetch target in the next active view ev
         }
 
         const activeIds = state.discoveredCandidates.map((candidate) => candidate.source);
-        assert.equal(state.discoveredCandidates.length, 2);
-        assert.deepEqual(activeIds, ['high-interpretation', 'low-garbage']);
+        assert.equal(state.discoveredCandidates.length, 3);
+        assert.deepEqual(activeIds, ['high-interpretation', 'high-doc', 'low-garbage']);
         return {
           decision: 'finalize',
           reasoning: 'Stop after validating anchor immunity.',
@@ -637,6 +637,198 @@ test('policy loop keeps the current-turn fetch target in the next active view ev
   assert.equal(result.discoveredCandidates.length, 3);
   assert.equal((result.decision.finalPackage as { status?: string } | undefined)?.status, 'FINAL_ASSERTION_STOP');
 });
+
+test('policy loop requests final summary one round after evidence assessments reach the target', async () => {
+  const seenSignals: Array<string | undefined> = [];
+  let step = 0;
+
+  const result = await runPolicyTaskLoop(
+    { topic: '全国 OPC 政策' },
+    {
+      maxIterations: 5,
+      targetValidatedEvidenceCount: 3,
+      askAgent: async (state) => {
+        seenSignals.push(state.convergencePhase);
+        step += 1;
+
+        if (step === 1) {
+          return {
+            decision: 'continue_fetch',
+            reasoning: 'Fetch three high-authority sources.',
+            searchActions: [],
+            fetchActions: [
+              { url: 'https://www.ndrc.gov.cn/opc.html', why: 'Official trend evidence' },
+              { url: 'https://www.opcfoundation.cn/', why: 'Authority definition evidence' },
+              { url: 'https://std.samr.gov.cn/opc.pdf', why: 'National standard evidence' },
+            ],
+            uncertainties: [],
+            discardedLeads: [],
+          };
+        }
+
+        if (step === 2) {
+          return {
+            decision: 'continue_search',
+            reasoning: 'Classified fetched evidence; runtime should request summary next.',
+            searchActions: [{ query: 'should not run after convergence', why: 'would be ignored by convergence signal' }],
+            fetchActions: [],
+            evidenceAssessments: [
+              { url: 'https://www.ndrc.gov.cn/opc.html', qualityCategory: 'SILVER_STANDARD', validationReason: 'Official agency page directly clarifies OPC policy context.' },
+              { url: 'https://www.opcfoundation.cn/', qualityCategory: 'SILVER_STANDARD', validationReason: 'Authority page clarifies industrial OPC meaning.' },
+              { url: 'https://std.samr.gov.cn/opc.pdf', qualityCategory: 'GOLD_STANDARD', validationReason: 'National standards source.' },
+            ],
+            uncertainties: [],
+            discardedLeads: [],
+          };
+        }
+
+        if (step === 3) {
+          assert.equal(state.convergencePhase, 'post_convergence_review');
+          return {
+            decision: 'continue_search',
+            reasoning: 'Post-convergence review round completed; request final summary next.',
+            searchActions: [],
+            fetchActions: [],
+            uncertainties: [],
+            discardedLeads: [],
+          };
+        }
+
+        assert.equal(state.convergencePhase, 'final_summary');
+        return {
+          decision: 'summarize_and_stop',
+          reasoning: 'Target validated evidence count reached; summarize and stop.',
+          searchActions: [],
+          fetchActions: [],
+          uncertainties: [],
+          discardedLeads: [],
+          finalPackage: {
+            status: 'FINAL_ASSERTION_STOP',
+            evidence: state.fetchedEvidence.map((page) => ({ url: page.finalUrl, category: page.qualityCategory })),
+          },
+        };
+      },
+      searchTool: {
+        search: async (query) => [{
+          query,
+          title: 'unexpected search after classification',
+          url: 'https://noise.example/search-hop',
+          snippet: 'search should be bypassed by summary on next round',
+          source: 'unexpected-search',
+        }],
+      },
+      fetchTool: {
+        fetch: async (url) => ({
+          requestedUrl: url,
+          finalUrl: url,
+          title: url,
+          content: 'substantive content',
+          backend: 'fetch-backend',
+        }),
+      },
+    },
+  );
+
+  assert.equal(step, 4);
+  assert.deepEqual(seenSignals, [undefined, undefined, 'post_convergence_review', 'final_summary']);
+  assert.equal(result.decision.decision, 'summarize_and_stop');
+  assert.equal(result.fetchedEvidence.filter((page) => page.qualityCategory === 'GOLD_STANDARD' || page.qualityCategory === 'SILVER_STANDARD').length, 3);
+});
+
+
+test('policy loop does not terminate on finalize during post_convergence_review and still advances to final_summary', async () => {
+  const seenSignals: Array<string | undefined> = [];
+  let step = 0;
+
+  const result = await runPolicyTaskLoop(
+    { topic: '常州市 医疗补贴' },
+    {
+      maxIterations: 5,
+      targetValidatedEvidenceCount: 3,
+      askAgent: async (state) => {
+        seenSignals.push(state.convergencePhase);
+        step += 1;
+
+        if (step === 1) {
+          return {
+            decision: 'continue_fetch',
+            reasoning: 'Fetch three local evidence pages first.',
+            searchActions: [],
+            fetchActions: [
+              { url: 'https://www.changzhou.gov.cn/a.html', why: 'Local evidence A' },
+              { url: 'https://www.changzhou.gov.cn/b.html', why: 'Local evidence B' },
+              { url: 'https://www.changzhou.gov.cn/c.html', why: 'Local evidence C' },
+            ],
+            uncertainties: [],
+            discardedLeads: [],
+          };
+        }
+
+        if (step === 2) {
+          return {
+            decision: 'continue_search',
+            reasoning: 'Classify fetched evidence so convergence can start.',
+            searchActions: [],
+            fetchActions: [],
+            evidenceAssessments: [
+              { url: 'https://www.changzhou.gov.cn/a.html', qualityCategory: 'GOLD_STANDARD', validationReason: 'Current local substantive page A.' },
+              { url: 'https://www.changzhou.gov.cn/b.html', qualityCategory: 'SILVER_STANDARD', validationReason: 'Current local substantive page B.' },
+              { url: 'https://www.changzhou.gov.cn/c.html', qualityCategory: 'SILVER_STANDARD', validationReason: 'Current local substantive page C.' },
+            ],
+            uncertainties: [],
+            discardedLeads: [],
+          };
+        }
+
+        if (step === 3) {
+          assert.equal(state.convergencePhase, 'post_convergence_review');
+          return {
+            decision: 'finalize',
+            reasoning: 'Model wrongly tries to finalize during post-convergence review.',
+            searchActions: [],
+            fetchActions: [],
+            uncertainties: [],
+            discardedLeads: [],
+            finalPackage: {
+              status: 'PREMATURE_FINALIZE',
+            },
+          };
+        }
+
+        assert.equal(state.convergencePhase, 'final_summary');
+        return {
+          decision: 'summarize_and_stop',
+          reasoning: 'Final summary round after review-only phase.',
+          searchActions: [],
+          fetchActions: [],
+          uncertainties: [],
+          discardedLeads: [],
+          finalPackage: {
+            status: 'FINAL_ASSERTION_STOP',
+          },
+        };
+      },
+      searchTool: {
+        search: async () => [],
+      },
+      fetchTool: {
+        fetch: async (url) => ({
+          requestedUrl: url,
+          finalUrl: url,
+          title: url,
+          content: 'substantive content',
+          backend: 'fetch-backend',
+        }),
+      },
+    },
+  );
+
+  assert.equal(step, 4);
+  assert.deepEqual(seenSignals, [undefined, undefined, 'post_convergence_review', 'final_summary']);
+  assert.equal(result.decision.decision, 'summarize_and_stop');
+  assert.equal((result.decision.finalPackage as { status?: string } | undefined)?.status, 'FINAL_ASSERTION_STOP');
+});
+
 
 test('policy loop interrupts at maxIterations when blocked retries would otherwise continue forever', async () => {
   const seenStates: PolicyAgentState[] = [];
