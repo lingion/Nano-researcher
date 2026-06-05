@@ -116,7 +116,7 @@ test('policy prompt forbids finalizing after fetch without explicit evidence ass
 test('policy prompt hardens legal input fields legal output schema and forbidden legacy action fields', () => {
   const prompt = buildPolicyPrompt();
 
-  assert.match(prompt, /Only use these input fields: `task`, `currentIteration`, `discoveredCandidates`, `fetchedEvidence`, `uncertainties`/i);
+  assert.match(prompt, /Only use these input fields: `task`, `currentIteration`, `discoveredCandidates`, `fetchedEvidence`, `uncertainties`, `convergencePhase`, `targetValidatedEvidenceCount`/i);
   assert.match(prompt, /The incoming JSON uses camelCase state fields, not snake_case aliases/i);
   assert.match(prompt, /Do not ignore `discoveredCandidates` just because it is not named `discovered_candidates`/i);
   assert.match(prompt, /The only legal top-level output fields are: `current_evidence_meta_check`, `decision`, `reasoning`, `searchActions`, `fetchActions`, `evidenceAssessments`, `uncertainties`, `discardedLeads`, `final_package`/i);
@@ -125,7 +125,7 @@ test('policy prompt hardens legal input fields legal output schema and forbidden
   assert.match(prompt, /Do not wrap the JSON in markdown or code fences/i);
 });
 
-test('policy prompt requires continue_fetch to carry non-empty fetchActions copied from discoveredCandidates URLs', () => {
+test('policy prompt requires continue_fetch to carry non-empty fetchActions copied from discoveredCandidates URLs and respect fetch count bounds', () => {
   const prompt = buildPolicyPrompt();
 
   assert.match(prompt, /A valid `continue_fetch` output must have one or more `fetchActions`/i);
@@ -134,6 +134,8 @@ test('policy prompt requires continue_fetch to carry non-empty fetchActions copi
   assert.match(prompt, /Never emit `continue_fetch` without at least one executable fetch target/i);
   assert.match(prompt, /Do not use `next_actions`; the runtime consumes only the canonical `fetchActions` array/i);
   assert.match(prompt, /Do not rely on `finalPackage`; every executable fetch target must already appear in `fetchActions`/i);
+  assert.match(prompt, /issue only 1-2 FETCH actions per round/i);
+  assert.match(prompt, /Never emit more than 2 `fetchActions` in one round unless the prompt explicitly invoked a forced multi-fetch transition/i);
 });
 
 test('policy prompt adds autonomous audit skepticism dynamic prioritization and evidence validity checks', () => {
