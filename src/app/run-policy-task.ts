@@ -5,12 +5,6 @@ import { writeTaskSummary } from '../artifacts/write-task-summary.ts';
 import { writeResultAudit } from '../artifacts/write-result-audit.ts';
 import { writeRunTranscript } from '../artifacts/write-run-transcript.ts';
 import { writeReportHtml } from '../artifacts/write-report-html.ts';
-import { searchWithCloudflareLocal, buildDefaultAutoWebSearchArgs } from '../search-fusion/cloudflare-search-local.ts';
-import {
-  createNdrcPolicySearchProvider,
-  createMiitPolicySearchProvider,
-  createGovCnPolicyLibraryProvider,
-} from '../search-fusion/official-policy-entrances.ts';
 import { fetchWithLocalPrimary } from '../fetch-fusion/local-fetch-primary.ts';
 import {
   normalizeFetchedEvidenceState,
@@ -25,31 +19,6 @@ import type { PolicyAgentDecision } from '../policy-task/output-schema.ts';
 import type { PolicyAgentState } from '../policy-task/state-schema.ts';
 import { createPersistentFetchTool } from '../workspace/persistent-fetch-tool.ts';
 
-function createDefaultSearchTool(): SearchTool {
-  const fetchImpl = async (url: string, init?: { headers?: Record<string, string>; method?: string; body?: string }) => {
-    const response = await fetch(url, {
-      method: init?.method ?? 'GET',
-      headers: init?.headers,
-      body: init?.body,
-    });
-
-    return {
-      text: async () => await response.text(),
-    };
-  };
-
-  return {
-    search: async (query: string) => (await searchWithCloudflareLocal(query, {
-      providerSearches: [
-        createNdrcPolicySearchProvider({ fetchImpl }),
-        createMiitPolicySearchProvider({ fetchImpl }),
-        createGovCnPolicyLibraryProvider({ fetchImpl }),
-      ],
-      webSearchArgs: buildDefaultAutoWebSearchArgs(query),
-    })).results,
-  };
-}
-
 function createDefaultFetchTool(): FetchTool {
   return {
     fetch: async (url: string) => fetchWithLocalPrimary(url),
@@ -61,13 +30,50 @@ async function createDefaultToolset(): Promise<{
   fetchTool: FetchTool;
   close?: () => Promise<void>;
 }> {
-  const backend = process.env.POLICY_SEARCH_BACKEND ?? 'legacy';
-  if (backend === 'search-mcp') {
-    return await createSearchMcpTools();
-  }
+  return await createSearchMcpTools();
+}
+
+function countValidatedEvidence(state: PolicyAgentState): number {
+  return state.fetchedEvidence.filter((page) => page.qualityCategory === 'GOLD_STANDARD' || page.qualityCategory === 'SILVER_STANDARD').length;
+}
+
+function withTargetValidatedEvidenceCount(state: PolicyAgentState, targetValidatedEvidenceCount: number): PolicyAgentState {
   return {
-    searchTool: createDefaultSearchTool(),
-    fetchTool: createDefaultFetchTool(),
+    ...state,
+    targetValidatedEvidenceCount,
+  };
+}
+
+function withConvergencePhase(state: PolicyAgentState, targetValidatedEvidenceCount: number): PolicyAgentState {
+  const validated = countValidatedEvidence(state);
+  if (validated < targetValidatedEvidenceCount) {
+    return {
+      ...state,
+      convergencePhase: undefined,
+      targetValidatedEvidenceCount,
+    };
+  }
+
+  if (state.convergencePhase === 'post_convergence_review') {
+    return {
+      ...state,
+      convergencePhase: 'final_summary',
+      targetValidatedEvidenceCount,
+    };
+  }
+
+  if (state.convergencePhase === 'final_summary') {
+    return {
+      ...state,
+      convergencePhase: 'final_summary',
+      targetValidatedEvidenceCount,
+    };
+  }
+
+  return {
+    ...state,
+    convergencePhase: 'post_convergence_review',
+    targetValidatedEvidenceCount,
   };
 }
 
@@ -87,6 +93,7 @@ export async function runPolicyTaskLoop(
     searchTool?: SearchTool;
     fetchTool?: FetchTool;
     onDebugEvent?: (event: DebugEvent) => void;
+    targetValidatedEvidenceCount?: number;
   } = {},
 ): Promise<PolicyAgentState & {
   decision: PolicyAgentDecision;
@@ -95,12 +102,14 @@ export async function runPolicyTaskLoop(
   final_quality_reason?: string;
 }> {
   const maxIterations = options.maxIterations ?? 4;
+  const targetValidatedEvidenceCount = options.targetValidatedEvidenceCount ?? Number.parseInt(process.env.POLICY_TARGET_VALIDATED_COUNT ?? '3', 10);
   let state: PolicyAgentState = {
     task: input,
     discoveredCandidates: [],
     fetchedEvidence: [],
     currentIteration: 0,
     uncertainties: [],
+    targetValidatedEvidenceCount,
   };
   let fullAuditState: PolicyAgentState = state;
   const ownedToolset = options.searchTool && options.fetchTool ? null : await createDefaultToolset();
@@ -113,12 +122,18 @@ export async function runPolicyTaskLoop(
 
   try {
     for (let index = 0; index < maxIterations; index += 1) {
-      const iterationInputState = pruneDiscoveryContext(normalizeFetchedEvidenceState(state), currentTurnAnchorUrl);
+      const iterationInputState = withTargetValidatedEvidenceCount(
+        pruneDiscoveryContext(normalizeFetchedEvidenceState(state), currentTurnAnchorUrl),
+        targetValidatedEvidenceCount,
+      );
       const result = await runLocalPolicyAgentIteration(iterationInputState, {
         askAgent: options.askAgent
           ? async (currentState) => {
               const normalizedState = normalizeFetchedEvidenceState(currentState);
-              const prunedState = pruneDiscoveryContext(normalizedState, currentTurnAnchorUrl);
+              const prunedState = withTargetValidatedEvidenceCount(
+                pruneDiscoveryContext(normalizedState, currentTurnAnchorUrl),
+                targetValidatedEvidenceCount,
+              );
 
               return await options.askAgent?.(prunedState);
             }
@@ -135,14 +150,23 @@ export async function runPolicyTaskLoop(
       fullAuditState = normalizeFetchedEvidenceState({
         task: result.task,
         discoveredCandidates: [...fullAuditState.discoveredCandidates, ...discoveredDelta],
-        fetchedEvidence: [...fullAuditState.fetchedEvidence, ...fetchedDelta],
+        fetchedEvidence: result.fetchedEvidence,
         transcriptPath: result.transcriptPath,
         currentIteration: result.currentIteration,
         uncertainties: result.uncertainties,
+        convergencePhase: result.convergencePhase,
+        targetValidatedEvidenceCount,
       });
-      state = fullAuditState;
+      state = withConvergencePhase(withTargetValidatedEvidenceCount(fullAuditState, targetValidatedEvidenceCount), targetValidatedEvidenceCount);
       lastDecision = result.decision;
       currentTurnAnchorUrl = result.decision.fetchActions.at(-1)?.url;
+
+      if (result.decision.decision === 'summarize_and_stop') {
+        return {
+          ...fullAuditState,
+          decision: result.decision,
+        };
+      }
 
       const termination = assessLoopTermination({
         currentIteration: result.currentIteration,
@@ -160,6 +184,7 @@ export async function runPolicyTaskLoop(
             }
           : undefined,
         agentDecisionType: result.decision.decision,
+        convergencePhase: result.convergencePhase,
       });
 
       if (termination.shouldBreak) {
@@ -197,6 +222,7 @@ export async function runPolicyTaskLoop(
           }
         : undefined,
       agentDecisionType: lastDecision.decision,
+      convergencePhase: fullAuditState.convergencePhase,
     });
 
     return {
