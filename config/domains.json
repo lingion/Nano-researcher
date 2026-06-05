@@ -1,0 +1,5 @@
+{
+  "primary_source_domains": ["shrd.gov.cn", "sh.npc.gov.cn", "www.gov.cn", "gov.cn"],
+  "secondary_source_domains": ["shanghai.gov.cn"],
+  "official_suffixes": [".gov.cn", ".org.cn"]
+}

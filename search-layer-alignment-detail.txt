@@ -1,0 +1,606 @@
+local-policy-agent 当前搜索层对齐 Cloudflare/Kerry auto 的实现说明
+
+文件位置：/Users/lingion/repo-downloads/local-policy-agent
+
+==================================================
+一、这份说明写什么
+==================================================
+
+这份 TXT 只整理一件事：
+
+- 当前本地项目的“搜索层”到底怎么实现
+- 目前已经有哪些入口
+- 这些入口怎么接到 auto 层里
+- 当前 auto 层如何融合 / 去重 / 排序 / 附加元数据
+- 它和你要对齐的 Cloudflare/Kerry auto 还有什么差距
+
+这份说明不展开 fetch 层细节，也不展开整个项目管理脉络；只聚焦现在的“搜索层 / auto 层 / provider 层”。
+
+==================================================
+二、当前搜索层的最终目标
+==================================================
+
+你已经反复强调并纠正过，当前正确目标是：
+
+1. 本地 Agent 默认搜索层是 auto 层。
+2. auto 不是某个单一 source，而是默认搜索层 / 聚合层 / 重排层。
+3. 官方 provider（如 NDRC / MIIT / gov.cn）不应该绕过 auto 抢结果。
+4. 官方 provider 应该先 feed into auto。
+5. auto 再和 general 搜索结果一起统一去重、重排、打标，再把统一结果池喂给模型。
+6. 模型默认吃的是 auto 统一结果池，而不是某个 source 的原始结果。
+
+==================================================
+三、当前搜索层的分层结构
+==================================================
+
+现在的搜索层可以分成 4 层：
+
+1. query routing / auto-router 层
+2. official provider 层
+3. general WebSearch / fallback 层
+4. fusion / auto 合成层
+
+--------------------------------------------------
+3.1 auto-router 层
+--------------------------------------------------
+
+文件：
+- src/search-fusion/auto-router.ts
+
+职责：
+- 根据 query 决定默认 auto 要带哪些 engines
+- 这是默认搜索层的入口策略，不是最终搜索实现
+
+当前 policy / 招商主路径核心代码：
+
+```ts
+if (/政策|办法|通知|意见|细则|招商|扶持|政府|gov\.cn|免申即享|补贴|申报|兑现/i.test(normalized)) {
+  return {
+    auto_mode: 'full',
+    engines: ['baidu', 'sogou', 'bing', 'bing_news', 'sina_news', '163_news'],
+  };
+}
+```
+
+这意味着当前对政策 / 招商 / 惠企 / 兑现类 query，默认 general 搜索引擎集合是：
+- baidu
+- sogou
+- bing
+- bing_news
+- sina_news
+- 163_news
+
+当前 auto-router 的性质：
+- 它是一个“默认 engines 选择器”
+- 它还不是完整的多轮 orchestrator
+- 它当前还没有 source priority state / attempt planning / fallback planning
+
+--------------------------------------------------
+3.2 official provider 层
+--------------------------------------------------
+
+文件：
+- src/search-fusion/official-policy-entrances.ts
+
+这一层负责三个已打穿的全国官方入口：
+- NDRC
+- MIIT
+- gov.cn / 国务院政策文件库
+
+它们不是静态 URL 列表，而是已经做成真正的 provider adapter。
+
+当前导出的三个 provider：
+- createNdrcPolicySearchProvider(...)
+- createMiitPolicySearchProvider(...)
+- createGovCnPolicyLibraryProvider(...)
+
+---------------------------------
+3.2.1 NDRC provider
+---------------------------------
+
+真实入口：
+- 入口页：/xxgk/wjk/index.html?tab=all&qt=...
+- 真实 API：https://fwfx.ndrc.gov.cn/api/query
+
+核心请求参数：
+- qt
+- tab
+- page
+- pageSize
+- siteCode=bm04000fgk
+- key=CAB549A94CF659904A7D6B0E8FC8A7E9
+- startDateStr
+- endDateStr
+- timeOption
+- sort
+
+核心代码：
+
+```ts
+const params = new URLSearchParams({
+  qt: query,
+  tab: 'all',
+  page: '1',
+  pageSize: '20',
+  siteCode: 'bm04000fgk',
+  key: 'CAB549A94CF659904A7D6B0E8FC8A7E9',
+  startDateStr: '',
+  endDateStr: '',
+  timeOption: '0',
+  sort: 'dateDesc',
+});
+
+const response = await options.fetchImpl(`https://fwfx.ndrc.gov.cn/api/query?${params.toString()}`, { ... });
+```
+
+返回解析：
+- 读取 payload.data.resultList
+- 提取 title / url / summary / docDate
+- 映射为 SearchDiscoveryRecord
+- source 标记为 `ndrc-policy-search`
+
+它当前适合的语义：
+- 招商
+- 投资
+- 营商环境
+- 企业服务
+- 政策兑现
+- 全国宏观政策
+
+---------------------------------
+3.2.2 MIIT provider
+---------------------------------
+
+真实入口链：
+- /search-front-server/api/structure/list-searchmanager
+- /search-front-server/api/structure/list-category
+- /search-front-server/api/search/info
+
+当前已知最佳主入口：
+- searchid=1
+- cateid=47
+
+补充入口：
+- searchid=174
+- cateid=186
+
+核心请求参数：
+- websiteid=110000000000000
+- searchid=1
+- cateid=47
+- q
+- pos
+- selectFields
+- highlightConfigs
+- highlightFields
+- level
+- sortFields
+- p
+
+核心代码：
+
+```ts
+const params = new URLSearchParams({
+  websiteid: '110000000000000',
+  searchid: '1',
+  q: query,
+  pg: '10',
+  cateid: '47',
+  pos: 'title_text,titlepy,infocontent,filenumbername,keyword,contentdescribe',
+  ...
+});
+
+const response = await options.fetchImpl(`https://www.miit.gov.cn/search-front-server/api/search/info?${params.toString()}`, { ... });
+```
+
+返回解析：
+- 读取 payload.data.searchResult.dataResults
+- 取每个 dataResults 的 groupData[0].data
+- 提取 title_text / title / url / content / deploytime
+- 相对 URL 转绝对 URL
+- source 标记为 `miit-policy-search`
+
+它当前适合的语义：
+- 工业和信息化政策
+- 高新区
+- 制造业
+- 专精特新
+- 中小企业发展环境
+- 科技工业相关政策
+
+---------------------------------
+3.2.3 gov.cn / 国务院政策文件库 provider
+---------------------------------
+
+前端壳页：
+- https://sousuo.www.gov.cn/zcwjk/policyDocumentLibrary
+- https://sousuo.www.gov.cn/wap/search-result?...
+
+真实 host：
+- https://sousuoht.www.gov.cn
+
+真实结果 API：
+- /athena/forward/2B22E8E39E850E17F95A016A74FCB6B673336FA8B6FEC0E2955907EF9AEE06BE
+
+当前已知请求体：
+- code
+- codes
+- configCode
+- dataTypeId
+- orderBy
+- searchBy
+- appendixType
+- granularity
+- trackTotalHits
+- isSearchForced
+- filters
+- pageNo
+- pageSize
+- customFilter
+- searchWord
+
+核心代码：
+
+```ts
+const payload = {
+  code: '17da70961a7',
+  codes: '',
+  configCode: '',
+  dataTypeId: '107',
+  orderBy: 'related',
+  searchBy: 'all',
+  appendixType: '',
+  granularity: 'ALL',
+  trackTotalHits: true,
+  isSearchForced: 0,
+  filters: [],
+  pageNo: 1,
+  pageSize: 10,
+  customFilter: { operator: 'and', properties: [] },
+  searchWord: query,
+};
+```
+
+请求还需要带：
+- athenaAppKey
+- athenaAppName
+- referer
+
+返回解析：
+- 读取 parsed.result.data.middle.list
+- 提取：
+  - title / title_no_tag
+  - url
+  - summary
+  - pubcode
+  - time
+- source 标记为 `gov-cn-policy-library-search`
+
+它当前适合的语义：
+- 国务院政策
+- 中央层面政策正文
+- 国函 / 国发 / 国办发 / 批复 / 公告 等正式文件
+
+--------------------------------------------------
+3.3 general WebSearch / fallback 层
+--------------------------------------------------
+
+文件：
+- src/search-fusion/cloudflare-search-local.ts
+
+这一层不是最终 auto，而是 auto 融合层里的一部分输入来源。
+
+当前输入来源有三类：
+1. providerSearches
+2. globalThis.WebSearch
+3. HTML fallback（DuckDuckGo / Baidu）
+
+WebSearch 调用方式：
+
+```ts
+const results = await search({
+  query,
+  ...(options.webSearchArgs ?? {}),
+});
+```
+
+也就是说当前默认 auto 会把：
+- query
+- auto_mode
+- engines
+传给 `WebSearch`
+
+当前 fallback 仍然保留：
+- DDG HTML
+- Baidu HTML
+
+核心代码：
+
+```ts
+const fallbackUrls = [
+  `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+  `https://www.baidu.com/s?wd=${encodeURIComponent(query)}`,
+];
+```
+
+==================================================
+四、fusion / auto 合成层
+==================================================
+
+文件：
+- src/search-fusion/cloudflare-search-local.ts
+
+这一层现在是整个默认搜索层真正的核心。
+
+职责：
+- 吃 provider 结果
+- 吃 WebSearch/auto 结果
+- 吃 HTML fallback 结果
+- 统一 normalize / dedupe / rerank / metadata merge
+
+--------------------------------------------------
+4.1 normalize
+--------------------------------------------------
+
+```ts
+export function normalizeSearchDiscovery(input: { ... }): SearchDiscoveryRecord[]
+```
+
+作用：
+- 把 provider / WebSearch / fallback 返回统一成 SearchDiscoveryRecord
+
+--------------------------------------------------
+4.2 attempts / sources 元数据
+--------------------------------------------------
+
+文件：
+- src/search-fusion/types.ts
+
+当前结构：
+
+```ts
+export interface SearchAttemptRecord {
+  stage: 'provider' | 'websearch' | 'html-fallback';
+  source: string;
+}
+
+export interface SearchDiscoveryRecord {
+  query: string;
+  title: string;
+  url: string;
+  snippet: string;
+  source: string;
+  sources?: string[];
+  attempts?: SearchAttemptRecord[];
+  quality_status?: 'green' | 'yellow';
+  quality_reason?: string;
+}
+```
+
+附加逻辑：
+
+```ts
+function appendAttemptMetadata(stage, results)
+```
+
+行为：
+- provider 结果进来时：
+  - stage = provider
+- WebSearch 结果进来时：
+  - stage = websearch
+- HTML fallback 结果进来时：
+  - stage = html-fallback
+
+结果对象现在已经能告诉模型：
+- 这条结果来自哪些 source
+- 经历了哪些阶段
+
+--------------------------------------------------
+4.3 quality_status / quality_reason
+--------------------------------------------------
+
+这是刚补上的当前新能力。
+
+逻辑在：
+- evaluateQuality(result)
+
+规则：
+
+1. 如果满足以下任一条件：
+- URL 看起来像官方：
+  - .gov.cn
+  - www.gov.cn
+  - /zwgk/
+- 或标题/摘要/URL 有政策正文特征：
+  - 政策
+  - 办法
+  - 通知
+  - 意见
+  - 细则
+  - 正文
+
+则：
+- quality_status = green
+- quality_reason = official_or_policy_like
+
+2. 如果是弱首页 / 门户页：
+- quality_status = yellow
+- quality_reason = weak_homepage_like
+
+3. 其他：
+- quality_status = yellow
+- quality_reason = unclassified_result
+
+这意味着当前本地 auto 已经不只是“返回结果”，而开始给结果打：
+- 质量状态
+- 质量原因
+
+--------------------------------------------------
+4.4 dedupe / metadata merge
+--------------------------------------------------
+
+当前 dedupe 不只是合并 snippet / source 字符串，还会合并：
+- sources
+- attempts
+
+核心逻辑：
+
+```ts
+const mergedSources = Array.from(new Set([...(existing.sources ?? [existing.source]), ...(result.sources ?? [result.source])]));
+const mergedAttempts = [...(existing.attempts ?? []), ...(result.attempts ?? [])];
+```
+
+这意味着一条结果即使被 canonical URL + title dedupe 了，模型仍然能知道：
+- 哪些 source 命中过
+- 哪些 stage 参与过
+
+--------------------------------------------------
+4.5 最关键的架构纠偏：provider feed into auto
+--------------------------------------------------
+
+这是整个当前搜索层最重要的正确性保证。
+
+以前的错误路径是：
+- provider 一旦给强结果就直接 return
+- 等于 provider bypass auto
+
+现在已经改正成：
+
+```ts
+if (Array.isArray(options.providerSearches)) {
+  for (const providerSearch of options.providerSearches) {
+    const providerResults = await providerSearch(query);
+    collectedResults.push(...appendAttemptMetadata('provider', normalizeSearchDiscovery(...)));
+  }
+}
+
+if (typeof search === 'function') {
+  const results = await search({ query, ...(options.webSearchArgs ?? {}) });
+  collectedResults.push(...appendAttemptMetadata('websearch', normalizeSearchDiscovery({ query, results })));
+  ...
+}
+```
+
+也就是说：
+- 官方 provider 不再绕过 auto 抢结果
+- 官方 provider 先喂给 auto 层
+- auto 再和 general 搜索一起统一重排
+- 模型默认吃的是 auto 的统一结果池
+
+==================================================
+五、默认搜索主路径当前如何串起来
+==================================================
+
+文件：
+- src/app/run-policy-task.ts
+
+当前默认 search tool：
+
+```ts
+search: async (query: string) => searchWithCloudflareLocal(query, {
+  providerSearches: [
+    createNdrcPolicySearchProvider({ fetchImpl }),
+    createMiitPolicySearchProvider({ fetchImpl }),
+    createGovCnPolicyLibraryProvider({ fetchImpl }),
+  ],
+  webSearchArgs: buildDefaultAutoWebSearchArgs(query),
+})
+```
+
+所以当前完整主路径是：
+
+1. 模型发起 search
+2. runPolicyTask 组默认 searchTool
+3. 默认 searchTool 带上：
+   - 三个全国官方 provider
+   - auto-compatible WebSearch 参数
+4. searchWithCloudflareLocal 收 provider + auto/WebSearch + fallback
+5. 统一 normalize / dedupe / rank / metadata merge
+6. 统一结果池喂给模型
+
+==================================================
+六、当前自动层和 Cloudflare/Kerry auto 的差距
+==================================================
+
+当前已经补上的：
+- 官方 provider feed into auto
+- sources
+- attempts
+- quality_status
+- quality_reason
+
+当前还缺的：
+
+1. 更完整的质量状态机
+- 现在只有：green / yellow
+- 还没有：blocked / empty / intent_mismatch / junk / usable_results
+
+2. 运行级统计元数据
+- fallback_used
+- filtered_count
+- merged_count
+- deduped_count
+
+3. 更细的 official-policy grade reranking
+目前虽然开始有 quality_status，但还没有系统地区分：
+- 官方正文
+- 政策解读
+- 新闻转载
+- 门户首页
+- 栏目页
+- 活动稿
+
+4. 更成熟的 auto orchestration
+当前 auto-router 还是：
+- query 分类 + engine list 返回
+还不是完整的：
+- source orchestration engine
+- attempt planner
+- fallback planner
+
+==================================================
+七、当前测试状态
+==================================================
+
+当前聚焦搜索层主线测试已经通过：
+
+1. 官方 provider 适配器测试
+- __tests__/search-fusion/official-policy-entrances.test.ts
+- 3/3 pass
+
+2. app 默认路径测试
+- __tests__/app/run-policy-task.test.ts
+- 5/5 pass
+
+3. auto / fusion 层测试
+- __tests__/search-fusion/cloudflare-search-local.test.ts
+- 6/6 pass
+
+4. fetch 层测试
+- __tests__/fetch-fusion/local-fetch-primary.test.ts
+- 5/5 pass
+
+当前聚焦组合回归：
+- 19/19 pass
+
+==================================================
+八、一句话总总结
+==================================================
+
+当前 local-policy-agent 的搜索层已经完成了从：
+- 单纯 WebSearch + fallback wrapper
+
+到：
+- 默认搜索层 = auto 层
+- 官方全国 provider + 国内优先 general 搜索共同喂给 auto
+- auto 统一去重、统一重排、统一附加元数据后喂给模型
+
+当前最核心的正确架构已经成立：
+- provider 不再 bypass auto
+- provider feed into auto
+- 模型默认吃的是 auto 合成后的统一结果池
+
+当前最核心的下一步也已经明确：
+- 继续补 richer quality state
+- 补 fallback_used / merged_count / deduped_count / filtered_count
+- 再往下做更细的 official-policy grade reranking

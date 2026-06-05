@@ -1,0 +1,27 @@
+{
+  "name": "local-policy-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test \"__tests__/**/*.test.ts\" \"src/**/*.test.ts\"",
+    "start": "node ./dist/app/index.js",
+    "policy-scanner": "tsx bin/policy-scanner.ts",
+    "live-audit": "tsx src/app/run-live-audit.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.154",
+    "@anthropic-ai/sdk": "^0.100.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@mozilla/readability": "^0.6.0",
+    "better-sqlite3": "^11.8.1",
+    "dotenv": "^16.4.7",
+    "jsdom": "^29.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "tsx": "^4.20.3",
+    "typescript": "^5.7.3"
+  }
+}

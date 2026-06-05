@@ -1,0 +1,639 @@
+# Heavy Prompt 核心逻辑抽象与 DecisionContext 引入审计说明
+
+## 0. 总结结论
+
+当前最重要的判断是：不要把实测有效的 Heavy Prompt 直接拆掉，也不要用新做的 DecisionContext / DomainSignals 去替代它。
+
+旧 Heavy Prompt 是生产实战中积累出来的“高压约束型武器”。它虽然长、重、难维护，但它承载了大量真实互联网政策检索场景中的失败经验：无限搜索、snippet 误判、地方转发陷阱、国家级噪音、旧年份政策误用、多个来源缝合等。
+
+新 DecisionContext 的正确位置不是“替换 Heavy Prompt”，而是作为一个增益层：
+
+Heavy Prompt + DecisionContext Advisory
+
+也就是说：
+
+- Heavy Prompt 保留原有状态机和业务审计纪律；
+- DecisionContext 只作为结构化语义情报注入；
+- Agent 仍然是唯一最终业务裁决者；
+- Engine 只做预处理、打标、提示风险，不做最终判断；
+- 任何新架构改动都必须用旧 Prompt 基准输出做 A/B 回归对比。
+
+核心原则：实测有效性优先于架构整洁。
+
+---
+
+## 1. 旧 Heavy Prompt 的本质
+
+旧 prompt 并不是普通提示词，它更像一个“运行时政策审计协议”。
+
+它承担了几类职责：
+
+1. Agent 角色定义；
+2. Runtime 与 Agent 的责任边界；
+3. Search / Fetch / Stop 状态机；
+4. 输出 JSON schema；
+5. 反无限搜索纪律；
+6. 本地政策搜索策略；
+7. 地方转发陷阱识别；
+8. 实质性政策证据门槛；
+9. 最终报告 source_url 追溯要求；
+10. 防止多个来源错误缝合；
+11. 防止旧年份政策嫁接到当前政策；
+12. 防止国家级政策噪音冒充本地政策。
+
+因此，旧 prompt 的价值不是“写得长”，而是它包含了一整套生产中踩坑后沉淀下来的行为约束。
+
+---
+
+## 2. 旧 Heavy Prompt 的核心语义模块
+
+### 2.1 Agent 是唯一业务决策者
+
+旧 prompt 开头强调：
+
+- You are the single Local Policy Agent inside a local policy workbench.
+- You are the only business decision-maker.
+- The runtime only executes, records, persists, deduplicates, and renders artifacts.
+- All business judgment must come from you.
+
+抽象为系统原则：
+
+Agent = 最终业务裁决者
+Runtime = 执行、记录、去重、持久化、渲染
+Engine / DecisionContext = 预处理、结构化情报、认知辅助
+
+这个边界不能被破坏。DecisionContext 不能变成“法官”，只能是“情报官”。
+
+---
+
+### 2.2 Search 和 Fetch 的证据等级
+
+旧 prompt 反复强调：
+
+- Search discovers candidate URLs only.
+- Search results are hints, not proof.
+- Search engine results are clues, not final proof.
+- Fetch extracts page evidence only.
+- Fetched evidence is the main basis for evidence judgment.
+- Do not assume discovery snippets are equal to fetched evidence.
+
+抽象成证据层级：
+
+search result / snippet = clue
+fetched page content = evidence
+final package = only built from fetched evidence
+
+这点非常关键。很多政策检索误判都来自把搜索结果标题或摘要当成正文证据。
+
+DecisionContext 后续可以帮助标注 candidate 的 tier 和 signals，但不能改变这个证据层级。只要没有 fetch 正文，就不能形成最终业务结论。
+
+---
+
+### 2.3 状态机协议
+
+旧 prompt 定义了严格输出状态：
+
+- continue_search
+- continue_fetch
+- finalize
+- stop
+
+并且定义了对应动作要求：
+
+- continue_search 必须有 searchActions；
+- continue_fetch 必须有 fetchActions；
+- finalize / stop 必须有空 searchActions 和 fetchActions；
+- 如果 discoveredCandidates 里已经有官方 URL，必须复制 URL 到 fetchActions；
+- 不能输出没有 fetchActions 的 continue_fetch；
+- 不能输出 legacy fields，比如 status、type、next_actions、recommendedNextActions；
+- 不能输出 browse / visit_url / fetch_page / read-url 等 alias。
+
+这套状态机是 runtime 稳定的基础，不能被 DecisionContext 替换。
+
+未来更合理的做法是：
+
+Heavy Prompt 继续负责状态机行为约束；
+DecisionContext 只补充“这个候选页面的语义定位”。
+
+---
+
+### 2.4 Anti-Infinite Search Loop
+
+旧 prompt 中有很强的反无限搜索纪律：
+
+- 如果 discoveredCandidates 已经包含 official / authority domain URL，禁止继续扩展搜索；
+- 必须转入 FETCH；
+- Stop URL collection once strong candidates are found；
+- 目标是 raw content evidence，不是 metadata accumulation。
+
+抽象成运行纪律：
+
+有官方候选 URL -> 优先 fetch -> 不允许连续纯 search
+
+这是生产级约束，非常重要。
+
+DecisionContext 暂时不应该替代它，因为 DecisionContext 只处理单个 candidate/page，不负责全局搜索状态。
+
+---
+
+### 2.5 本地政策搜索 Arsenal
+
+旧 prompt 里包含了一整套本地政策检索词库：
+
+Geographic Anchors:
+- 黑龙江省
+- 黑龙江
+- 哈尔滨市
+- 哈尔滨高新区
+
+Local Authorities:
+- 科技厅
+- 工信厅
+- 财政厅
+- 发改委
+- 高新区管委会
+
+Surgical Action Targets:
+- 高新技术企业
+- 科技型中小企业
+- 高企
+
+Core Funding Terms:
+- 租金减免
+- 房租补贴
+- 房租减免
+- 研发投入补助
+- 奖补资金
+
+Policy Suffixes:
+- 办法
+- 通知
+- 实施细则
+- 申报指南
+
+Expert Query Examples:
+- 黑龙江省 科技厅 高新技术企业 租金减免 办法
+- 哈尔滨高新区 企业 房租 减免 政策
+- 黑龙江省 工信厅 高企 研发投入 补助
+
+这些不是普通关键词，而是旧系统从搜索引擎现实里打磨出来的搜索策略。
+
+风险点：如果把它们简单拆成几个 boolean，然后从 prompt 中删除，可能导致模型失去原有的搜索敏感度。
+
+更稳的做法：
+
+短期：保留 Heavy Prompt 的本地搜索 Arsenal；
+中期：把其中一部分迁成 DomainSignals，但必须用回归集验证不退化。
+
+---
+
+### 2.6 Local Matryoshka Forwarding Trap
+
+旧 prompt 最关键的业务判断之一：地方 gov 域名 + 本地标题，不等于本地实质政策。
+
+典型陷阱：
+
+- 页面在 hlj.gov.cn 或地方 gov 域名；
+- 标题包含 黑龙江 / 哈尔滨 等本地锚点；
+- 但正文只是“关于转发工信部...通知”；
+- 没有本地补贴比例；
+- 没有本地金额；
+- 没有本地申报条件；
+- 没有地方执行细则；
+- 没有本地 contact / application gateway。
+
+旧 prompt 的要求：
+
+- Treat forwarding pages as secondary noise；
+- Reading them does not constitute a successful audit；
+- If body has no independent local subsidy numbers, reject as incomplete evidence；
+- Continue search for substantive implementation handbooks。
+
+抽象成审计逻辑：
+
+local_domain + local_anchor + national_forwarding_body + no_local_math
+=> forwarding trap
+=> incomplete evidence
+=> continue search / fetch stronger local source
+
+但注意：这类判断依赖正文语义，不应该被纯 regex 机械判死刑。
+
+DecisionContext 可以标记：
+
+forwardingLike: true
+containsGeographicAnchor: true
+containsSubstantiveMath: false
+isAmbiguous: true
+
+但最终是否可用，仍应交给 Agent 基于全文判断。
+
+---
+
+### 2.7 Substantive Evidence Gate
+
+旧 prompt 的 stop 条件非常硬：
+
+只有找到本地实质性 math clause 才能 stop。
+
+实质性 math clause 包括：
+
+- subsidy cash amount；
+- subsidy percentage；
+- rent-free months；
+- rent reduction percentage；
+- square-meter subsidy standards；
+- local application gateway；
+- local issuing authority；
+- traceable source_url。
+
+抽象成最终证据门槛：
+
+没有本地实质性政策数学条款 -> 不允许 stop
+没有 source_url -> 不允许 final package
+没有 2026 applicability -> 不允许 final business conclusion
+
+这个门槛绝不能因为 DecisionContext 的 tier 是 primary 就放松。
+
+---
+
+### 2.8 Final Package 透明性
+
+旧 prompt 强调：
+
+- 如果 final_package 依赖多个 fetched pages，必须明确说明；
+- 不允许假装多个来源来自同一个 document；
+- 每个实质性条款必须有准确 source_url；
+- 不允许把过期 2012 数值嫁接到 2026 文件上；
+- 不允许 ZERO RE-MIXING。
+
+抽象成审计安全规则：
+
+每个业务条款必须 source-bound。
+每个数值必须 context-bound。
+每个年份必须 validity-bound。
+
+这是政策审计系统的底线。
+
+---
+
+## 3. 为什么不能直接替换 Heavy Prompt
+
+直接替换 Heavy Prompt 的风险很高。
+
+### 3.1 语义规则可能丢失
+
+旧 prompt 中很多规则不是简单关键词，而是上下文逻辑。例如：
+
+- 地方标题但正文国家政策；
+- 官方域名但无本地实施细则；
+- 有资金词但没有金额或比例；
+- 有旧政策数值但不适用于 2026；
+- 多来源拼接但不能伪装成单来源。
+
+这些逻辑如果被粗暴拆成 boolean，很可能丢失语义细节。
+
+### 3.2 模型行为可能退化
+
+旧 prompt 虽重，但它已经实测有效。模型在这套约束下知道：
+
+- 什么时候 search；
+- 什么时候 fetch；
+- 什么时候 stop；
+- 什么时候怀疑 official domain；
+- 什么时候拒绝 forwarding page；
+- 什么时候继续找更本地的实施细则。
+
+如果新架构没有回归测试就替换旧 prompt，可能让模型失去这些行为纪律。
+
+### 3.3 架构整洁不等于业务正确
+
+DecisionContext / Engine / DomainSignals 都让代码更漂亮、更可测，但如果实测效果变差，这就是工程傲慢。
+
+最高准则是：
+
+实测有效性 > 架构整洁度
+
+---
+
+## 4. DecisionContext 的正确定位
+
+DecisionContext 不应该替代 Heavy Prompt，而应该作为 advisory prefix。
+
+推荐结构：
+
+### DecisionContext Advisory
+以下是 Engine 预处理出的结构化语义辅助信息。
+它是参考，不是最终裁决。
+如果正文证据强于 metadata，请优先正文证据。
+如果 tier 与正文证据冲突，请指出冲突并基于正文证据裁决。
+
+{ decisionContext JSON }
+
+### Original Heavy Prompt
+保留原 prompt 全量核心状态机与审计纪律。
+
+这样做的好处：
+
+- 不破坏旧 prompt 的生产能力；
+- 给模型提供更清晰的候选页面语义定位；
+- 降低模型识别 tier / derivative / ambiguity 的认知成本；
+- 允许 A/B 测试 DecisionContext 是否带来增益；
+- 如果效果不好，可以无损回退。
+
+---
+
+## 5. A/B 实验设计
+
+必须做对撞实验，而不是凭感觉判断。
+
+### 5.1 组 A：Baseline
+
+Heavy Prompt only。
+
+使用现有 `src/policy-task/prompt-builder.ts` 的 prompt，不注入 DecisionContext。
+
+### 5.2 组 B：Experiment
+
+DecisionContext Advisory + Heavy Prompt。
+
+旧 prompt 不改，只在顶部加入结构化上下文。
+
+### 5.3 比较指标
+
+比较：
+
+1. decision 是否一致或更好；
+2. 是否更快进入 fetch；
+3. 是否更早识别 forwarding trap；
+4. 是否更少陷入 national-level noise；
+5. 是否更清楚解释 ambiguity；
+6. 是否保持 source_url 追溯纪律；
+7. 是否出现过度信任 metadata 的退化。
+
+### 5.4 回退原则
+
+如果 B 相比 A：
+
+- 准确率下降；
+- 过度相信 tier；
+- 忽略正文证据；
+- 更早错误 stop；
+- 弱化 local substantive evidence gate；
+
+则立即废弃或修改 DecisionContext 注入方式，不替换 Heavy Prompt。
+
+---
+
+## 6. 回归测试集设计
+
+建议建立：
+
+fixtures/policy-cases/
+  01-local-forwarding-trap.json
+  02-primary-derivative-page.json
+  03-unknown-exact-title.json
+  04-official-pdf-non-primary.json
+  05-local-substantive-math.json
+
+每个 case 结构：
+
+{
+  "name": "local forwarding trap",
+  "description": "地方 gov 域名与地方标题，但正文只是转发国家政策，没有地方补贴数学条款。",
+  "inputState": {},
+  "expectedHeavyPromptBehavior": {
+    "decision": "continue_search",
+    "mustMention": [
+      "forwarding",
+      "no local subsidy math",
+      "continue search"
+    ],
+    "mustNot": [
+      "stop",
+      "final_package with substantive math"
+    ]
+  },
+  "expectedDecisionContextSignals": {
+    "forwardingLike": true,
+    "containsGeographicAnchor": true,
+    "containsSubstantiveMath": false,
+    "isAmbiguous": true
+  }
+}
+
+---
+
+## 7. 五类核心回归案例
+
+### 7.1 Local Forwarding Trap
+
+输入特征：
+
+- local gov domain；
+- title contains 黑龙江 / 哈尔滨；
+- body says 关于转发 工业和信息化部；
+- no provincial subsidy ratio；
+- no cash amount；
+- no rent-free months；
+- no local application gateway。
+
+Heavy Prompt 期望：
+
+- 不 stop；
+- 不 final_package；
+- reasoning 中识别 forwarding / matryoshka；
+- continue_search 或 continue_fetch stronger local evidence。
+
+DecisionContext 期望：
+
+- containsGeographicAnchor: true；
+- forwardingLike: true；
+- containsSubstantiveMath: false；
+- isAmbiguous: true。
+
+---
+
+### 7.2 Primary Official but Derivative-like
+
+输入特征：
+
+- primary official domain；
+- title exact match or near match；
+- content contains 解读 / 一图读懂 / 问答；
+- likely not original policy text。
+
+Heavy Prompt 期望：
+
+- 不直接当 final official policy；
+- fetch or search original document if needed；
+- reasoning 说明 derivative/explanatory risk。
+
+DecisionContext 期望：
+
+- tier: primary_source_candidate；
+- derivativeLike: true；
+- isAmbiguous: true；
+- modelInstructions 提醒不要把解释页直接当最终政策正文。
+
+---
+
+### 7.3 Unknown Source Exact Title
+
+输入特征：
+
+- non-official domain；
+- title exact match；
+- content appears relevant；
+- lacks official authority。
+
+Heavy Prompt 期望：
+
+- 只能作为 clue；
+- 不能 final；
+- 需要 official source confirmation。
+
+DecisionContext 期望：
+
+- tier: unknown；
+- exactTitleMatch: true；
+- isAmbiguous: true 或 clue-only；
+- modelInstructions 提醒不能当权威证据。
+
+---
+
+### 7.4 Official PDF on Non-primary Official Suffix
+
+输入特征：
+
+- URL ends .pdf；
+- gov.cn / org.cn suffix；
+- not in primary_source_domains；
+- may be official but not target local authority。
+
+Heavy Prompt 期望：
+
+- fetch/read PDF evidence if useful；
+- 不因 PDF 自动 stop；
+- 检查是否有目标地区、本地执行、时间有效性。
+
+DecisionContext 期望：
+
+- tier: official_repost_or_related；
+- isOfficialPdf: true；
+- isTrustedOfficialDomain: true；
+- verificationStrategy 要求核对 title/content/local applicability。
+
+---
+
+### 7.5 Local Substantive Math Evidence
+
+输入特征：
+
+- local authority domain or credible local official page；
+- contains 哈尔滨高新区 / 黑龙江；
+- contains 租金减免 / 房租补贴 / 奖补资金；
+- contains explicit amount / percentage / months；
+- contains application condition or gateway。
+
+Heavy Prompt 期望：
+
+- 可以 stop 或 finalize if traceability and 2026 applicability satisfied；
+- final_package must include source_url；
+- reasoning 说明 local substantive math found。
+
+DecisionContext 期望：
+
+- containsGeographicAnchor: true；
+- containsLocalAuthority: true；
+- containsCoreFundingTerms: true；
+- containsSubstantiveMath: true；
+- forwardingLike: false；
+- isAmbiguous: false or lower ambiguity。
+
+---
+
+## 8. DomainSignals 的正确设计边界
+
+DomainSignals 可以做，但必须遵守事实与判定分离。
+
+正确字段：
+
+- containsGeographicAnchor
+- containsLocalAuthority
+- containsCoreFundingTerms
+- containsSubstantiveMath
+- forwardingLike
+- temporalValidityHint
+- isAmbiguous
+
+避免字段：
+
+- eligible
+- approved
+- finalPolicy
+- shouldStop
+- validEvidence
+
+原因：
+
+前者是事实信号；后者是最终裁决，会剥夺 Agent 的业务判断权。
+
+---
+
+## 9. 推荐的下一步工程动作
+
+### Step 1：备份 Heavy Prompt
+
+必须保留：
+
+- src/policy-task/prompt-builder.ts
+- .diag-medium-prompt.txt
+- .diag-full-prompt.txt
+
+这些是现有生产资产。
+
+### Step 2：建立 fixtures
+
+创建：
+
+fixtures/policy-cases/*.json
+
+每个 case 记录 inputState、expectedHeavyPromptBehavior、expectedDecisionContextSignals。
+
+### Step 3：建立 Baseline Harness
+
+先跑 Heavy Prompt only，保存输出。
+
+输出目录建议：
+
+outputs/prompt-baseline/<case-id>/heavy-output.json
+
+### Step 4：建立 Experiment Harness
+
+再跑 DecisionContext + Heavy Prompt。
+
+输出目录建议：
+
+outputs/prompt-ab/<case-id>/context-heavy-output.json
+
+### Step 5：比较输出
+
+比较 decision、reasoning、actions、final_package、mustMention / mustNot。
+
+---
+
+## 10. 最终建议
+
+现在不要急着瘦身 Prompt。
+
+正确顺序是：
+
+1. 锁住旧 Heavy Prompt 的实测行为；
+2. 建立高难度回归集；
+3. 做 Heavy Prompt vs DecisionContext + Heavy Prompt 对撞；
+4. 只有在新结构不退化时，再考虑 prompt 裁剪；
+5. 任何 prompt 裁剪都必须有回归数据支持。
+
+一句话：
+
+Heavy Prompt 是生产武器，DecisionContext 是辅助瞄具。先验证辅助瞄具是否提升命中率，再考虑是否改造武器本体。

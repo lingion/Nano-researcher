@@ -1,0 +1,502 @@
+# NanoClaw Gateway Provider Hard-lock 修复与 live-audit 实测汇报
+
+## 1. 问题背景
+
+用户要求：通过项目入口让本地政策 Agent 实搜“找上海医疗最新补贴”，而不是绕过项目直接调用外部 Search MCP。
+
+最初错误：我绕过了项目入口，直接用外部 search/fetch 工具查了上海医疗补贴。这不符合验证目标，因为无法证明本项目里的 Heavy Prompt、runPolicyTaskLoop、search/fetch runtime 是否真实有效。
+
+随后改为从项目入口运行：
+
+```bash
+cd /Users/lingion/repo-downloads/local-policy-agent
+
+LIVE_AUDIT_TOPIC='找上海医疗最新补贴' \
+LIVE_AUDIT_MAX_ITERATIONS=4 \
+LIVE_AUDIT_OUTPUT_DIR=/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy \
+POLICY_SEARCH_BACKEND=search-mcp \
+pnpm live-audit
+```
+
+结果：Agent 尚未进入 runPolicyTaskLoop，就在 preflight 阶段失败。
+
+关键错误：
+
+```text
+Live audit preflight failed before entering runPolicyTaskLoop:
+Gateway returned verified empty response after retries
+```
+
+诊断输出显示：
+
+```json
+{
+  "transport": "nanoclaw",
+  "provider": "anthropic",
+  "model": "gpt-5.4",
+  "effectiveBaseURL": "https://987xyz.com/",
+  "gateway": {
+    "ok": true,
+    "includesConfiguredModel": true,
+    "configuredModel": "gpt-5.4"
+  }
+}
+```
+
+这说明 `/v1/models` 可用，模型存在，但 runtime 把 `https://987xyz.com/` 错误推断为 Anthropic provider，导致用 Anthropic `/messages` 协议打一个 OpenAI-compatible gateway，最终返回 200 但无可解析文本。
+
+---
+
+## 2. 根因结论
+
+根因不是 Heavy Prompt，也不是 Search MCP，也不是 Agent 判断力。
+
+根因是：
+
+```text
+src/runtime/nanoclaw-bridge.ts 的 provider 自动推断逻辑过于脆弱。
+```
+
+旧逻辑：
+
+```ts
+const provider =
+  process.env.NANOCLAW_LLM_PROVIDER === 'openai' || process.env.NANOCLAW_LLM_PROVIDER === 'anthropic'
+    ? process.env.NANOCLAW_LLM_PROVIDER
+    : /\/chat\/completions$/i.test(baseURL) || /openai/i.test(baseURL)
+      ? 'openai'
+      : 'anthropic';
+```
+
+问题：
+
+- `https://987xyz.com/` 本质上是 OpenAI-compatible gateway；
+- 但 URL 不包含 `openai`，也不以 `/chat/completions` 结尾；
+- 所以旧逻辑默认推断为 `anthropic`；
+- provider 一错，endpoint / body / response parser 全错；
+- preflight 直接在起飞前失败。
+
+这是典型的“隐式 provider 推断”生产风险。
+
+---
+
+## 3. 验证性绕过
+
+为验证根因，我临时显式指定：
+
+```bash
+NANOCLAW_LLM_PROVIDER=openai
+```
+
+完整命令：
+
+```bash
+cd /Users/lingion/repo-downloads/local-policy-agent
+
+LIVE_AUDIT_TOPIC='找上海医疗最新补贴' \
+LIVE_AUDIT_MAX_ITERATIONS=4 \
+LIVE_AUDIT_OUTPUT_DIR=/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-openai \
+POLICY_SEARCH_BACKEND=search-mcp \
+NANOCLAW_LLM_PROVIDER=openai \
+pnpm live-audit
+```
+
+结果：preflight 通过，Agent 成功进入 Heavy Prompt 的真实 search/fetch 循环。
+
+关键输出：
+
+```json
+{
+  "topic": "找上海医疗最新补贴",
+  "loop_interrupted_by_gate": false,
+  "final_quality_status": null,
+  "final_quality_reason": null,
+  "current_iteration": 3,
+  "discovered_candidates": 16,
+  "fetched_evidence": 1,
+  "final_decision": "stop",
+  "debug_trace_path": "/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-openai/debug-trace.json"
+}
+```
+
+抓到的官方结果之一：
+
+```text
+URL:
+https://www.shpt.gov.cn/zhengwu/qtczxx-wjwczxx/2026/58/201854.html
+
+Title:
+关于下达2026年度卫生健康事业经费补贴的通知-上海普陀
+
+Authority:
+上海市普陀区卫生健康委员会
+
+Date:
+2026年2月9日
+```
+
+正文证据片段：
+
+```text
+关于下达普陀区中心医院2026年度卫生健康事业经费补贴的通知
+2026年度补贴卫生健康事业经费总额：壹亿贰仟玖佰壹拾陆万伍仟叁佰元整
+基本补贴经费：￥126165300元
+项目补贴经费：￥3000000元
+```
+
+说明：
+
+- Heavy Prompt 能自己搜索；
+- Search MCP 能被项目 runtime 调用；
+- Fetch 能抓到官方正文；
+- Agent 不是没能力；
+- 故障确实是 provider 推断错误。
+
+---
+
+## 4. TDD 修复
+
+### 4.1 新增失败测试
+
+文件：
+
+```text
+__tests__/runtime/nanoclaw-bridge.test.ts
+```
+
+新增测试：
+
+```ts
+test('nanoclaw bridge hard-locks known OpenAI-compatible gateway hosts even when only ANTHROPIC_* env vars are set', () => {
+  const original = {
+    NANOCLAW_API_KEY: process.env.NANOCLAW_API_KEY,
+    NANOCLAW_BASE_URL: process.env.NANOCLAW_BASE_URL,
+    NANOCLAW_LLM_PROVIDER: process.env.NANOCLAW_LLM_PROVIDER,
+    POLICY_AGENT_LLM_MODEL: process.env.POLICY_AGENT_LLM_MODEL,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+    ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+    ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,
+  };
+
+  delete process.env.NANOCLAW_API_KEY;
+  delete process.env.NANOCLAW_BASE_URL;
+  delete process.env.NANOCLAW_LLM_PROVIDER;
+  process.env.ANTHROPIC_API_KEY = 'gateway-key';
+  process.env.ANTHROPIC_BASE_URL = 'https://987xyz.com/';
+  process.env.ANTHROPIC_MODEL = 'gpt-5.4';
+
+  try {
+    assert.deepEqual(resolveNanoclawRuntimeConfig(), {
+      apiKey: 'gateway-key',
+      baseURL: 'https://987xyz.com/',
+      model: 'gpt-5.4',
+      provider: 'openai',
+    });
+  } finally {
+    for (const [key, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+```
+
+RED 结果：
+
+```text
+Expected provider: openai
+Actual provider: anthropic
+```
+
+这正确复现了故障。
+
+---
+
+### 4.2 实现修复
+
+文件：
+
+```text
+src/runtime/nanoclaw-bridge.ts
+```
+
+新增 provider hard-lock 函数：
+
+```ts
+function inferProviderFromBaseUrl(baseURL: string): NanoclawRuntimeConfig['provider'] {
+  try {
+    const hostname = new URL(baseURL).hostname.toLowerCase();
+    if (hostname === '987xyz.com' || hostname.endsWith('.987xyz.com')) {
+      return 'openai';
+    }
+  } catch {
+    // Fall through to path-based inference for malformed-but-usable gateway strings.
+  }
+
+  return /\/(chat\/completions)$/i.test(baseURL.replace(/\/+$/, '')) || /openai/i.test(baseURL)
+    ? 'openai'
+    : 'anthropic';
+}
+```
+
+修改 `resolveNanoclawRuntimeConfig()`：
+
+```ts
+const provider =
+  process.env.NANOCLAW_LLM_PROVIDER === 'openai' || process.env.NANOCLAW_LLM_PROVIDER === 'anthropic'
+    ? process.env.NANOCLAW_LLM_PROVIDER
+    : inferProviderFromBaseUrl(baseURL);
+```
+
+语义：
+
+- 用户显式指定 provider 时，尊重用户；
+- 未指定 provider 时，`987xyz.com` 强制识别为 `openai`；
+- 其他未知 URL 继续走原路径推断逻辑。
+
+---
+
+## 5. 单元测试验证
+
+运行：
+
+```bash
+cd /Users/lingion/repo-downloads/local-policy-agent
+pnpm exec tsx --test __tests__/runtime/nanoclaw-bridge.test.ts
+```
+
+结果：
+
+```text
+# tests 12
+# pass 12
+# fail 0
+```
+
+说明：
+
+- 新增 hard-lock 测试通过；
+- 既有 openai-compatible 输出解析测试通过；
+- 既有 anthropic-compatible 输出解析测试通过；
+- retry / empty diagnostics / SSE forensics 测试均未回归。
+
+---
+
+## 6. Build + 项目入口实测验证
+
+运行命令：
+
+```bash
+cd /Users/lingion/repo-downloads/local-policy-agent
+
+pnpm build && \
+LIVE_AUDIT_TOPIC='找上海医疗最新补贴' \
+LIVE_AUDIT_MAX_ITERATIONS=2 \
+LIVE_AUDIT_OUTPUT_DIR=/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-hardlock \
+POLICY_SEARCH_BACKEND=search-mcp \
+env -u NANOCLAW_LLM_PROVIDER \
+pnpm live-audit
+```
+
+注意：这里显式移除了 `NANOCLAW_LLM_PROVIDER`，目的是验证 hard-lock 是否真的生效。
+
+结果：
+
+```text
+pnpm build
+# exit 0
+```
+
+live-audit preflight 诊断：
+
+```json
+{
+  "provider": "openai",
+  "providerMode": "inferred",
+  "model": "gpt-5.4",
+  "effectiveBaseURL": "https://987xyz.com/",
+  "presentEnvKeys": [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL"
+  ],
+  "gateway": {
+    "endpoint": "https://987xyz.com/v1/models",
+    "ok": true,
+    "includesConfiguredModel": true,
+    "configuredModel": "gpt-5.4"
+  }
+}
+```
+
+关键点：
+
+```text
+provider: openai
+providerMode: inferred
+live_audit.preflight.ok
+```
+
+这证明：即使未设置 `NANOCLAW_LLM_PROVIDER=openai`，runtime 也能自动把 `987xyz.com` 识别为 OpenAI-compatible gateway。
+
+---
+
+## 7. 修复后 Agent 实搜结果
+
+短跑设置：
+
+```text
+LIVE_AUDIT_MAX_ITERATIONS=2
+```
+
+所以本轮不是完整长跑，而是验证入口、preflight、search/fetch 是否打通。
+
+最终摘要：
+
+```json
+{
+  "topic": "找上海医疗最新补贴",
+  "loop_interrupted_by_gate": true,
+  "final_quality_status": "green",
+  "final_quality_reason": "usable_with_minor_noise",
+  "current_iteration": 2,
+  "discovered_candidates": 16,
+  "fetched_evidence": 1,
+  "final_decision": "continue_fetch",
+  "debug_trace_path": "/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-hardlock/debug-trace.json"
+}
+```
+
+实际抓取页面：
+
+```text
+URL:
+https://ybj.sh.gov.cn/zcjd/20240529/24f8ac6be4d8420a80200b61fe2efdae.html
+
+Title:
+《关于调整本市生育医疗费补贴标准有关问题的通知》政策问答
+
+Source:
+上海市医疗保障局
+
+发布时间:
+2024-05-29
+```
+
+抓取正文中的补贴条款：
+
+```text
+生育的，生育医疗费补贴按4500元计发；
+危重孕产妇生育医疗费补贴按8300元计发；
+妊娠4个月以上（含4个月）自然流产的，生育医疗费补贴按800元计发；
+妊娠不满4个月自然流产的，生育医疗费补贴按600元计发。
+```
+
+执行时间：
+
+```text
+2024年6月1日（含）之后生育或者流产的符合条件的参保生育妇女，按照新标准享受生育医疗费补贴。
+```
+
+这说明：
+
+- Agent 通过项目入口启动；
+- Heavy Prompt 被真实送入模型；
+- 搜索工具由 runtime 调用；
+- Fetch 工具由 runtime 调用；
+- Agent 找到了上海医保局官方页面；
+- Agent 抓到了明确医疗补贴金额条款。
+
+---
+
+## 8. 当前结论
+
+### 已确认修复
+
+```text
+987xyz.com provider 自动推断错误已修复。
+```
+
+### 已确认可用
+
+```text
+项目入口 pnpm live-audit 可在不显式设置 NANOCLAW_LLM_PROVIDER 的情况下进入 Agent search/fetch 循环。
+```
+
+### 已确认 Heavy Prompt 能力
+
+```text
+Heavy Prompt 能够通过 Search MCP 找到并 Fetch 上海医疗补贴官方正文。
+```
+
+### 仍需注意
+
+本次 `LIVE_AUDIT_MAX_ITERATIONS=2` 是短跑验证，所以最终被 gate 截断：
+
+```text
+loop_interrupted_by_gate: true
+final_decision: continue_fetch
+```
+
+这不是失败，而是 max iterations 到达导致中断。若要生成完整 final_package，需要提高 `LIVE_AUDIT_MAX_ITERATIONS` 再跑完整流程。
+
+---
+
+## 9. 建议后续动作
+
+### 9.1 README 增加网关协议映射说明
+
+建议新增章节：
+
+```text
+Gateway Provider Mapping
+
+987xyz.com is an OpenAI-compatible gateway.
+If NANOCLAW_LLM_PROVIDER is not explicitly set, runtime hard-locks this host to provider=openai.
+For unknown gateways, set NANOCLAW_LLM_PROVIDER=openai|anthropic explicitly.
+```
+
+### 9.2 将本次案例加入回归基准
+
+建议保存为：
+
+```text
+fixtures/live-audit/shanghai-medical-subsidy.json
+```
+
+记录：
+
+- topic: 找上海医疗最新补贴；
+- expected provider: openai；
+- expected preflight: ok；
+- expected discovered_candidates > 0；
+- expected fetched_evidence > 0；
+- must contain official ybj.sh.gov.cn or shpt.gov.cn evidence；
+- must contain subsidy math clause。
+
+### 9.3 不要用 DecisionContext 修这个问题
+
+这次故障是 infra provider 协议错误，不是 Prompt 或 Agent 逻辑问题。
+
+不要通过 Prompt、DecisionContext、DomainSignals 去修 provider 推断问题。
+
+正确修复点就是：
+
+```text
+src/runtime/nanoclaw-bridge.ts
+```
+
+---
+
+## 10. 最终一句话
+
+这次问题的真实结论是：
+
+```text
+Heavy Prompt 没坏，Agent 没坏，Search MCP 没坏。
+坏的是 NanoClaw provider 隐式推断。
+
+987xyz.com 必须走 OpenAI-compatible 协议。
+现在已通过 TDD hard-lock，并通过项目入口 live-audit 实测验证。
+```

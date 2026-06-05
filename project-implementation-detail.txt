@@ -1,0 +1,745 @@
+local-policy-agent 全量实现与入口总说明
+
+文件位置：/Users/lingion/repo-downloads/local-policy-agent
+
+==================================================
+一、项目最终目标
+==================================================
+
+这个项目不是泛搜索工具，而是一个面向：
+- 政策
+- 招商
+- 惠企
+- 政策兑现
+- 企业服务
+
+的本地 Agent 搜索与取证工具。
+
+核心目标：
+1. 默认搜索层是 auto 层。
+2. auto 层负责聚合多路搜索入口的结果。
+3. auto 层负责去重、过滤、重排，再把统一结果池喂给模型。
+4. 模型默认先用 auto；其他接口只是补充。
+5. 整体方向尽量脱离线上 Search MCP，走本地自己的 provider / 搜索层。
+6. 官方全国入口优先，国内通用入口辅助。
+
+==================================================
+二、当前架构总览
+==================================================
+
+当前可以分成 6 层：
+
+1. 任务入口层
+2. Agent 决策循环层
+3. Prompt / 规则层
+4. Auto 路由层
+5. 官方 provider 层
+6. Search fusion / auto 合成层
+7. Fetch 层
+8. Artifact / trace 层
+
+--------------------------------------------------
+2.1 任务入口层
+--------------------------------------------------
+
+文件：
+- src/app/run-policy-task.ts
+
+职责：
+- 组默认 searchTool
+- 组默认 fetchTool
+- 跑一轮本地 policy task
+- 输出 task-summary / result-audit / transcript / debug trace / report
+
+核心代码：
+
+```ts
+function createDefaultSearchTool(): SearchTool {
+  const fetchImpl = async (url: string, init?: { headers?: Record<string, string>; method?: string; body?: string }) => {
+    const response = await fetch(url, {
+      method: init?.method ?? 'GET',
+      headers: init?.headers,
+      body: init?.body,
+    });
+
+    return {
+      text: async () => await response.text(),
+    };
+  };
+
+  return {
+    search: async (query: string) => searchWithCloudflareLocal(query, {
+      providerSearches: [
+        createNdrcPolicySearchProvider({ fetchImpl }),
+        createMiitPolicySearchProvider({ fetchImpl }),
+        createGovCnPolicyLibraryProvider({ fetchImpl }),
+      ],
+      webSearchArgs: buildDefaultAutoWebSearchArgs(query),
+    }),
+  };
+}
+```
+
+这段代码的意义：
+- 默认 search 不是直接打某个搜索引擎
+- 默认 search 先挂三个全国官方 provider
+- 然后带上 auto 默认 engines 配置
+- 最后统一交给 searchWithCloudflareLocal(...) 做 auto 层融合
+
+--------------------------------------------------
+2.2 Agent 决策循环层
+--------------------------------------------------
+
+文件：
+- src/runtime/local-session-loop.ts
+- src/runtime/run-local-policy-agent.ts
+
+职责：
+- 让模型基于当前 state 决定下一步 search/fetch
+- runtime 只执行动作，不替模型做业务判断
+
+核心代码：
+
+```ts
+const decision = await deps.askAgent(state);
+
+const discovered = [...state.discoveredCandidates];
+for (const action of decision.searchActions) {
+  const found = await deps.searchTool.search(action.query);
+  discovered.push(...found);
+}
+
+const fetched = [...state.fetchedEvidence];
+for (const action of decision.fetchActions) {
+  const page = await deps.fetchTool.fetch(action.url);
+  fetched.push(page);
+}
+```
+
+意义：
+- search 负责发现候选 URL
+- fetch 负责抓正文证据
+- runtime 不直接判断政策真假或哪个结果最好
+
+--------------------------------------------------
+2.3 Prompt / 规则层
+--------------------------------------------------
+
+文件：
+- src/policy-task/prompt-builder.ts
+
+核心原则：
+- Search discovers candidate URLs only.
+- Fetch extracts page evidence only.
+- Fetched evidence is the main basis for evidence judgment.
+- All business judgment must come from the model.
+- Runtime only executes, records, deduplicates, persists, and renders artifacts.
+
+意义：
+- search 不冒充证据层
+- fetch 不冒充业务判断层
+- runtime 不偷偷替模型下结论
+
+--------------------------------------------------
+2.4 Auto 路由层
+--------------------------------------------------
+
+文件：
+- src/search-fusion/auto-router.ts
+
+职责：
+- 根据 query 决定默认 auto 要带哪些 engines
+- 这是“默认搜索层”的策略入口
+
+当前最重要的 policy 路由代码：
+
+```ts
+if (/政策|办法|通知|意见|细则|招商|扶持|政府|gov\.cn|免申即享|补贴|申报|兑现/i.test(normalized)) {
+  return {
+    auto_mode: 'full',
+    engines: ['baidu', 'sogou', 'bing', 'bing_news', 'sina_news', '163_news'],
+  };
+}
+```
+
+含义：
+- 对政策 / 招商 / 惠企 / 兑现类 query
+- 默认 general 搜索入口先走国内优先集合：
+  - baidu
+  - sogou
+  - bing
+  - bing_news
+  - sina_news
+  - 163_news
+
+当前还保留过其他 query 类型路由痕迹（人物、location、developer、news、research 等），
+但主业务目标已经重新收束到 policy / 招商主线。
+
+--------------------------------------------------
+2.5 官方 provider 层
+--------------------------------------------------
+
+文件：
+- src/search-fusion/official-policy-entrances.ts
+
+这层是当前最重要的新能力。
+它不再是静态 URL 列表，而是三个已经打穿的全国官方入口 adapter。
+
+当前三个 provider：
+1. createNdrcPolicySearchProvider(...)
+2. createMiitPolicySearchProvider(...)
+3. createGovCnPolicyLibraryProvider(...)
+
+---------------------------------
+2.5.1 NDRC provider
+---------------------------------
+
+真实入口链：
+- 页面入口：/xxgk/wjk/index.html?tab=all&qt=...
+- JSON API：https://fwfx.ndrc.gov.cn/api/query
+
+核心代码：
+
+```ts
+const params = new URLSearchParams({
+  qt: query,
+  tab: 'all',
+  page: '1',
+  pageSize: '20',
+  siteCode: 'bm04000fgk',
+  key: 'CAB549A94CF659904A7D6B0E8FC8A7E9',
+  startDateStr: '',
+  endDateStr: '',
+  timeOption: '0',
+  sort: 'dateDesc',
+});
+
+const response = await options.fetchImpl(`https://fwfx.ndrc.gov.cn/api/query?${params.toString()}`, { ... });
+```
+
+返回解析：
+- 读取 payload.data.resultList
+- 提取：
+  - title
+  - url
+  - summary
+  - docDate
+- 统一映射为 SearchDiscoveryRecord
+- source = ndrc-policy-search
+
+定位：
+- 招商
+- 投资
+- 营商环境
+- 企业服务
+- 政策兑现
+- 全国宏观政策
+
+说明：
+- 对“科技招商”这种复合词可能 0 结果
+- 但对“招商 / 投资 / 企业服务 / 政策兑现”等词有真实结果
+- 它更偏宏观政策入口，不是地方招商细则入口
+
+---------------------------------
+2.5.2 MIIT provider
+---------------------------------
+
+真实入口链：
+- /search-front-server/api/structure/list-searchmanager
+- /search-front-server/api/structure/list-category
+- /search-front-server/api/search/info
+
+当前确认最佳主入口：
+- searchid = 1
+- cateid = 47
+
+补充入口：
+- searchid = 174
+- cateid = 186
+
+核心代码：
+
+```ts
+const params = new URLSearchParams({
+  websiteid: '110000000000000',
+  searchid: '1',
+  q: query,
+  pg: '10',
+  cateid: '47',
+  pos: 'title_text,titlepy,infocontent,filenumbername,keyword,contentdescribe',
+  ...
+});
+
+const response = await options.fetchImpl(`https://www.miit.gov.cn/search-front-server/api/search/info?${params.toString()}`, { ... });
+```
+
+返回解析：
+- 读取 payload.data.searchResult.dataResults
+- 提取每个 result 的 groupData[0].data
+- 统一取：
+  - title_text / title
+  - url
+  - content
+  - deploytime
+- source = miit-policy-search
+
+定位：
+- 工业和信息化政策
+- 高新区
+- 制造业
+- 专精特新
+- 中小企业发展环境
+- 科技工业相关政策
+
+说明：
+- 主入口应优先 searchid=1 / cateid=47
+- 网站群 (174/186) 可补充，但噪音更大
+
+---------------------------------
+2.5.3 gov.cn / 国务院政策文件库 provider
+---------------------------------
+
+前端壳页：
+- https://sousuo.www.gov.cn/zcwjk/policyDocumentLibrary
+- https://sousuo.www.gov.cn/wap/search-result?...
+
+真实后端通道：
+- host: https://sousuoht.www.gov.cn
+- athena search API:
+  /athena/forward/2B22E8E39E850E17F95A016A74FCB6B673336FA8B6FEC0E2955907EF9AEE06BE
+
+它的真实移动端结果流里还会依赖：
+- code
+- codes
+- configCode
+- dataTypeId
+- searchWord
+- /irs-net/data/{code}/displayTemplate.json
+
+当前 provider 核心代码：
+
+```ts
+const payload = {
+  code: '17da70961a7',
+  codes: '',
+  configCode: '',
+  dataTypeId: '107',
+  orderBy: 'related',
+  searchBy: 'all',
+  appendixType: '',
+  granularity: 'ALL',
+  trackTotalHits: true,
+  isSearchForced: 0,
+  filters: [],
+  pageNo: 1,
+  pageSize: 10,
+  customFilter: { operator: 'and', properties: [] },
+  searchWord: query,
+};
+
+const response = await options.fetchImpl(
+  'https://sousuoht.www.gov.cn/athena/forward/2B22E8E39E850E17F95A016A74FCB6B673336FA8B6FEC0E2955907EF9AEE06BE',
+  {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: {
+      athenaAppKey: '...',
+      athenaAppName: '...'
+    }
+  }
+);
+```
+
+返回解析：
+- 读取 parsed.result.data.middle.list
+- 提取：
+  - title / title_no_tag
+  - url
+  - summary
+  - pubcode
+  - time
+- source = gov-cn-policy-library-search
+
+定位：
+- 国务院政策
+- 中央层级政策正文
+- 国函 / 国发 / 国办发 / 批复 / 公告 等正式文件
+
+--------------------------------------------------
+2.6 Search fusion / auto 合成层
+--------------------------------------------------
+
+文件：
+- src/search-fusion/cloudflare-search-local.ts
+
+这是现在整个默认搜索层里最关键的一层。
+
+职责：
+- 吃 provider 结果
+- 吃 WebSearch / auto 结果
+- 必要时再吃 HTML fallback 结果
+- 统一 normalize / dedupe / rank / metadata merge
+
+---------------------------------
+2.6.1 输入来源
+---------------------------------
+
+当前三类输入：
+1. providerSearches
+2. globalThis.WebSearch
+3. HTML fallback（DuckDuckGo / Baidu）
+
+---------------------------------
+2.6.2 核心 normalize
+---------------------------------
+
+```ts
+export function normalizeSearchDiscovery(input: { ... }): SearchDiscoveryRecord[]
+```
+
+作用：
+- 统一把 provider / auto / fallback 返回结果转成 SearchDiscoveryRecord
+
+---------------------------------
+2.6.3 核心 dedupe
+---------------------------------
+
+```ts
+function canonicalizeUrl(input: string): string
+function normalizeTitle(input: string): string
+function dedupeSearchResults(results: SearchDiscoveryRecord[]): SearchDiscoveryRecord[]
+```
+
+规则：
+- URL 去 hash / query
+- title 去空白和分隔符
+- 相同 canonical URL + 相似 title 的结果合并
+- 合并时同时保留：
+  - snippet
+  - source
+  - sources
+  - attempts
+
+---------------------------------
+2.6.4 当前 ranking
+---------------------------------
+
+```ts
+function scoreSearchResult(query: string, result: SearchDiscoveryRecord): number
+```
+
+当前主要规则：
+- `.gov.cn`、`www.gov.cn`、`/zwgk/` 加分
+- `政策/办法/通知/意见/细则/正文` 加分
+- `新闻/资讯/门户/首页` 扣分
+- query 与结果同时命中 `科技/招商` 再加分
+
+说明：
+- 现在已经能做初步政策倾向排序
+- 但还不是更精细的 official-policy grade reranking
+
+---------------------------------
+2.6.5 当前弱结果判断
+---------------------------------
+
+```ts
+function isWeakHomepageLikeResult(result: SearchDiscoveryRecord): boolean
+```
+
+规则：
+- 根首页 URL
+- 且标题/snippet 带“新闻 / 资讯 / 门户 / 首页”
+- 判为弱首页类结果
+
+---------------------------------
+2.6.6 当前 sources / attempts 元数据
+---------------------------------
+
+在 types.ts 中：
+
+```ts
+export interface SearchAttemptRecord {
+  stage: 'provider' | 'websearch' | 'html-fallback';
+  source: string;
+}
+
+export interface SearchDiscoveryRecord {
+  ...
+  sources?: string[];
+  attempts?: SearchAttemptRecord[];
+}
+```
+
+附加逻辑：
+
+```ts
+function appendAttemptMetadata(stage, results)
+```
+
+行为：
+- provider 结果进入时记录：
+  - stage = provider
+- WebSearch 结果进入时记录：
+  - stage = websearch
+- HTML fallback 结果进入时记录：
+  - stage = html-fallback
+
+这意味着现在结果对象里已经开始能告诉模型：
+- 这条结果来自哪些 sources
+- 经历了哪些阶段
+
+---------------------------------
+2.6.7 当前 quality_status / quality_reason
+---------------------------------
+
+现在也已经开始补了：
+
+在 types.ts 中：
+
+```ts
+quality_status?: 'green' | 'yellow';
+quality_reason?: string;
+```
+
+当前在 cloudflare-search-local.ts 中通过：
+
+```ts
+function evaluateQuality(result)
+```
+
+来打标。
+
+当前规则：
+- 如果结果是官方站或政策词明显：
+  - quality_status = green
+  - quality_reason = official_or_policy_like
+- 如果是弱首页类：
+  - quality_status = yellow
+  - quality_reason = weak_homepage_like
+- 其他：
+  - quality_status = yellow
+  - quality_reason = unclassified_result
+
+这意味着本地 auto 已经开始具备：
+- 结果质量状态
+- 结果质量原因
+
+---------------------------------
+2.6.8 最关键的架构纠偏
+---------------------------------
+
+之前曾经走偏成：
+- provider 一有强结果就直接 return
+- 相当于 bypass auto
+
+现在已经纠正：
+- provider 结果先进入 collectedResults
+- 再继续调 WebSearch / auto
+- 然后统一 dedupe / rank
+- 最终喂给模型的是 combined result pool
+
+也就是说：
+- 官方 provider feed into auto
+- auto 统一重排
+- 模型默认吃 auto 的统一结果池
+
+这点是当前架构里最重要的正确性保证。
+
+--------------------------------------------------
+2.7 Fetch 层
+--------------------------------------------------
+
+文件：
+- src/fetch-fusion/local-fetch-primary.ts
+
+职责：
+- 从 URL 抓正文 / 页面证据
+- 产出 title / content / finalUrl
+
+当前路径：
+1. WebFetch
+2. raw fetch fallback
+3. Readability 主正文抽取
+4. gov 内容清洗
+
+核心能力：
+- 有标题兜底
+- 有正文提取
+- 有政府站噪音清理
+
+--------------------------------------------------
+2.8 Artifact / trace 层
+--------------------------------------------------
+
+文件：
+- src/artifacts/write-task-summary.ts
+- src/artifacts/write-result-audit.ts
+- src/artifacts/write-run-transcript.ts
+- src/artifacts/write-report-html.ts
+
+产物：
+- task-summary.json
+- result-audit.json
+- run-transcript.json
+- debug-trace.json
+- report.html
+
+目的：
+- 让整个运行过程可追踪、可审计、可人工复盘
+
+==================================================
+三、当前默认 policy / 招商主路径
+==================================================
+
+当前默认搜索主路径已经变成：
+
+第一层：全国官方 provider
+- ndrc-policy-search
+- miit-policy-search
+- gov-cn-policy-library-search
+
+第二层：国内优先 general engines
+- baidu
+- sogou
+- bing
+- bing_news
+- sina_news
+- 163_news
+
+第三层：必要时 HTML fallback
+- DuckDuckGo HTML
+- Baidu HTML
+
+最终原则：
+- 官方 provider 先喂给 auto
+- auto 再和 general 搜索一起统一重排
+- 模型默认吃 auto 的 unified result pool
+
+==================================================
+四、当前测试状态
+==================================================
+
+截至目前，聚焦主线测试已经通过：
+
+1. 官方 provider 适配器测试
+- __tests__/search-fusion/official-policy-entrances.test.ts
+- 3/3 pass
+
+2. app 默认路径测试
+- __tests__/app/run-policy-task.test.ts
+- 5/5 pass
+
+3. search-fusion auto 层测试
+- __tests__/search-fusion/cloudflare-search-local.test.ts
+- 6/6 pass
+
+4. fetch 层测试
+- __tests__/fetch-fusion/local-fetch-primary.test.ts
+- 5/5 pass
+
+当前组合回归：
+- 19/19 pass
+
+==================================================
+五、已实测打穿的全国官方入口
+==================================================
+
+1. NDRC
+- 真实 API：
+  https://fwfx.ndrc.gov.cn/api/query
+- 真实可用 query：
+  招商 / 投资 / 营商环境 / 企业服务 / 政策兑现 / 免申即享
+- 状态：已打穿
+
+2. MIIT
+- 真实接口链：
+  /search-front-server/api/structure/list-searchmanager
+  /search-front-server/api/structure/list-category
+  /search-front-server/api/search/info
+- 最佳主入口：searchid=1 / cateid=47
+- 状态：已打穿
+
+3. gov.cn / 国务院政策文件库
+- 壳页：
+  https://sousuo.www.gov.cn/zcwjk/policyDocumentLibrary
+  https://sousuo.www.gov.cn/wap/search-result?...
+- 真实 host：
+  https://sousuoht.www.gov.cn
+- 真实结果 API：
+  /athena/forward/2B22E8E39E850E17F95A016A74FCB6B673336FA8B6FEC0E2955907EF9AEE06BE
+- 状态：已打穿
+
+==================================================
+六、当前仍然缺的最重要东西
+==================================================
+
+虽然主路径已经基本成型，但和 Kerry / Cloudflare 那边成熟的 auto 还有差距。
+
+目前仍然缺：
+
+1. 更完整的质量状态机
+- 目前只有 green / yellow
+- 还没有：blocked / empty / intent_mismatch / junk / usable_results
+
+2. 运行级统计元数据
+- fallback_used
+- filtered_count
+- merged_count
+- deduped_count
+
+3. 更细的官方正文级重排
+还没有系统地区分：
+- 官方正文
+- 政策解读
+- 新闻转载
+- 门户首页
+- 栏目页
+- 活动稿
+
+4. 更成熟的 auto orchestration
+当前 auto-router 还是：
+- query 分类 + engines 数组返回
+而不是完整的：
+- source orchestration
+- attempt planning
+- fallback planning
+
+==================================================
+七、当前最重要的下一步
+==================================================
+
+如果继续沿主线推进，最值钱的顺序是：
+
+第一优先：补 richer quality / run metadata
+- quality_status（已起步）
+- quality_reason（已起步）
+- fallback_used
+- filtered_count
+- merged_count
+- deduped_count
+
+第二优先：更强的 official-policy grade reranking
+- 正文 > 解读 > 新闻转载 > 门户/栏目页 > 首页
+
+第三优先：把 auto-router 从轻路由器继续推进成更成熟的 orchestrator
+
+==================================================
+八、一句话总总结
+==================================================
+
+当前 local-policy-agent 已经不是一个简单的本地 wrapper，而是在逐步形成：
+
+- 一个本地 policy / investment-promotion agent
+- 默认搜索层是 auto
+- auto 吸收全国官方 provider + 国内优先 general 搜索
+- 统一去重、统一重排、统一带元数据后喂给模型
+- fetch 层负责正文证据验证
+
+当前最核心的事情已经完成：
+- 三个全国官方入口打穿
+- 官方 provider 接入默认 policy 搜索主路径
+- provider 不再 bypass auto，而是 feed into auto
+- auto 已开始拥有 attempts / sources / quality_status / quality_reason
+
+当前最核心的差距也很明确：
+- 本地 auto 还缺更丰富的质量状态和运行统计，以及更细的官方正文级排序能力。

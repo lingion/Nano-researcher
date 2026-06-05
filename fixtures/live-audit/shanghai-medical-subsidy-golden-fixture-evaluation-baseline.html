@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Golden Fixture 审计标杆：上海普陀区 2026 医疗卫生补贴 Trace</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f8fafc;
+        --paper: #ffffff;
+        --ink: #111827;
+        --muted: #6b7280;
+        --line: #e5e7eb;
+        --blue: #1d4ed8;
+        --green: #047857;
+        --amber: #b45309;
+        --red: #b91c1c;
+        --soft-blue: #eff6ff;
+        --soft-green: #ecfdf5;
+        --soft-amber: #fffbeb;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        line-height: 1.65;
+      }
+      main {
+        max-width: 980px;
+        margin: 32px auto;
+        padding: 0 20px 48px;
+      }
+      header, section, details {
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 24px 28px;
+        margin-bottom: 18px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+      }
+      h1, h2, h3 { line-height: 1.25; margin: 0 0 12px; }
+      h1 { font-size: 30px; }
+      h2 { font-size: 22px; margin-top: 4px; }
+      h3 { font-size: 17px; margin-top: 18px; }
+      p { margin: 8px 0 0; }
+      ul, ol { margin: 8px 0 0 1.25rem; padding: 0; }
+      li { margin: 4px 0; }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        background: #f3f4f6;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        padding: 0.08rem 0.35rem;
+        font-size: 0.92em;
+      }
+      pre {
+        overflow-x: auto;
+        background: #0f172a;
+        color: #e5e7eb;
+        border-radius: 12px;
+        padding: 16px;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+        font-size: 14px;
+      }
+      th, td {
+        border: 1px solid var(--line);
+        padding: 10px 12px;
+        vertical-align: top;
+        text-align: left;
+      }
+      th { background: #f9fafb; }
+      .meta { color: var(--muted); font-size: 14px; }
+      .hero {
+        background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%);
+        border-color: #bfdbfe;
+      }
+      .callout {
+        border-radius: 14px;
+        padding: 14px 16px;
+        margin-top: 14px;
+        border: 1px solid var(--line);
+      }
+      .callout.green { background: var(--soft-green); border-color: #bbf7d0; }
+      .callout.blue { background: var(--soft-blue); border-color: #bfdbfe; }
+      .callout.amber { background: var(--soft-amber); border-color: #fde68a; }
+      .badge {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 3px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        margin-right: 6px;
+      }
+      .badge.green { background: #d1fae5; color: var(--green); }
+      .badge.blue { background: #dbeafe; color: var(--blue); }
+      .badge.amber { background: #fef3c7; color: var(--amber); }
+      .badge.red { background: #fee2e2; color: var(--red); }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+        background: #ffffff;
+      }
+      .card strong { display: block; margin-bottom: 6px; }
+      .small { font-size: 13px; color: var(--muted); }
+      summary { cursor: pointer; font-weight: 700; }
+      @media (max-width: 760px) {
+        main { margin: 16px auto; padding: 0 12px 32px; }
+        header, section, details { padding: 18px; border-radius: 14px; }
+        .grid { grid-template-columns: 1fr; }
+        h1 { font-size: 24px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="hero">
+        <h1>Golden Fixture 审计标杆：上海普陀区 2026 医疗卫生补贴 Trace</h1>
+        <p class="meta">Document type: evaluation-framework-baseline · Project: local-policy-agent · Taxonomy version: v1 · Created: 2026-06-05</p>
+        <div class="callout green">
+          <strong>核心结论：</strong>该 trace 可作为 infrastructure 回归测试的第一个 Golden Fixture。Agent 在未引入额外 DecisionContext 补丁的情况下，完成了官方来源验证、正文金额抽取、适用边界收缩和非官方来源排除，证明 Heavy Prompt 的证据纪律可在真实 live-audit 流程中生效。
+        </div>
+      </header>
+
+      <section>
+        <h2>1. 标杆 Case 定义</h2>
+        <table>
+          <tbody>
+            <tr>
+              <th>任务主题</th>
+              <td>找上海医疗最新补贴</td>
+            </tr>
+            <tr>
+              <th>Golden Trace</th>
+              <td><code>/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-openai/debug-trace.json</code></td>
+            </tr>
+            <tr>
+              <th>关键决策事件</th>
+              <td><code>events[23]</code> model.raw_output，<code>events[24]</code> model.parsed_decision，<code>events[25]</code> agent.decision</td>
+            </tr>
+            <tr>
+              <th>官方证据 URL</th>
+              <td><code>https://www.shpt.gov.cn/zhengwu/qtczxx-wjwczxx/2026/58/201854.html</code></td>
+            </tr>
+            <tr>
+              <th>政策文件</th>
+              <td>《关于下达2026年度卫生健康事业经费补贴的通知》，文号：普卫健行办〔2026〕1号</td>
+            </tr>
+            <tr>
+              <th>发布主体</th>
+              <td>上海市普陀区卫生健康委员会</td>
+            </tr>
+            <tr>
+              <th>时间属性</th>
+              <td>2026年度；发布日期/成文日期为 2026年02月09日</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>2. 审计通过的三项核心能力</h2>
+        <div class="grid">
+          <article class="card">
+            <span class="badge green">PASS</span>
+            <strong>Evidence Integrity</strong>
+            <p>Agent 没有停留在搜索摘要，而是 fetch 官方正文，并把发布主体、时间、文号、金额条款绑定到同一官方来源。</p>
+          </article>
+          <article class="card">
+            <span class="badge green">PASS</span>
+            <strong>Constraint Sensitivity</strong>
+            <p>Agent 没有把普陀区材料夸大成上海全市政策，也没有把内部预算下达通知包装成公众申请指南。</p>
+          </article>
+          <article class="card">
+            <span class="badge green">PASS</span>
+            <strong>Noise Suppression</strong>
+            <p>Agent 识别并弃用 <code>shui5.cn</code> 非官方转载/文章站，保留官方来源作为唯一证据链。</p>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <h2>3. 可复用 Evaluation Rubric</h2>
+        <p>以后任何 live-audit 或搜索型政策 Agent 的回归测试，都可以用下面的矩阵判断是否达到此 Golden Fixture 的质量水平。</p>
+        <table>
+          <thead>
+            <tr>
+              <th>维度</th>
+              <th>通过标准</th>
+              <th>失败信号</th>
+              <th>证据位置</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>官方来源闭环</td>
+              <td>最终答案引用官方正文，并能说明发布主体、文号、时间。</td>
+              <td>只依据搜索 snippet、转载站、聚合页或标题判断。</td>
+              <td><code>final_package.policy_official_id</code>、<code>issuing_authority</code>、<code>source_url</code></td>
+            </tr>
+            <tr>
+              <td>实质数学证据</td>
+              <td>抽取明确金额、对象、条款，并保持金额与对象配对。</td>
+              <td>只说“有补贴”，但没有金额、对象或条款来源。</td>
+              <td><code>final_package.substantive_math_clauses</code></td>
+            </tr>
+            <tr>
+              <td>行政辖区边界</td>
+              <td>明确区级、市级、部门级或中央级，不越权泛化。</td>
+              <td>把区级政策说成市级政策，把内部下达说成公开申请。</td>
+              <td><code>uncertainties</code> 中的 jurisdiction 限定</td>
+            </tr>
+            <tr>
+              <td>信源噪声处理</td>
+              <td>非官方转载站可作为发现线索，但不能作为最终证据。</td>
+              <td>将流量站、税务转载站、新闻站作为最终依据。</td>
+              <td><code>discardedLeads</code></td>
+            </tr>
+            <tr>
+              <td>停止条件质量</td>
+              <td>停止前已经有足够官方正文证据，同时保留必要不确定性。</td>
+              <td>过早停止、无限搜索、或为了完成任务而删掉边界限制。</td>
+              <td><code>decision: "stop"</code> 与 <code>reasoning</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>4. Golden Fixture 的最低回归断言</h2>
+        <p>Infrastructure 改动后，重跑该 case 时至少应满足以下断言；否则应视为回归失败。</p>
+        <ol>
+          <li>最终决策应为 <code>stop</code>，而不是卡在 search/fetch 循环。</li>
+          <li>最终证据必须包含官方 URL：<code>shpt.gov.cn</code>。</li>
+          <li>最终包必须识别发布主体：<code>上海市普陀区卫生健康委员会</code>。</li>
+          <li>最终包必须识别文号：<code>普卫健行办〔2026〕1号</code>。</li>
+          <li>最终包必须包含多个对象化金额条款，且至少包含普陀区中心医院、普陀区人民医院、普陀区利群医院。</li>
+          <li>最终不确定性必须保留：该材料是普陀区区级材料，不是上海全市统一补贴目录。</li>
+          <li>最终不确定性必须保留：该材料是预算/补贴下达通知，不是开放申请指南。</li>
+          <li><code>shui5.cn</code> 等非官方来源不能进入最终证据链，只能进入 discarded leads 或低优先级线索。</li>
+        </ol>
+        <div class="callout amber">
+          <strong>建议：</strong>后续不要用该 case 证明 Prompt 更“聪明”，而要用它证明 gateway、provider、fetch、search、trace parse、state update 等基础设施没有破坏 Agent 的既有认知能力。
+        </div>
+      </section>
+
+      <section>
+        <h2>5. 路线决策</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>方向</th>
+              <th>建议</th>
+              <th>理由</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Heavy Prompt</td>
+              <td><span class="badge green">冻结</span> 暂停瘦身与语义补丁</td>
+              <td>该 case 已证明现有 Prompt 能在真实互联网环境中执行专业证据纪律。</td>
+            </tr>
+            <tr>
+              <td>DecisionContext</td>
+              <td><span class="badge amber">谨慎</span> 不作为当前必要补丁</td>
+              <td>过早规则引擎化可能干扰模型对行政边界和实质正文的判断。</td>
+            </tr>
+            <tr>
+              <td>Infrastructure</td>
+              <td><span class="badge blue">优先</span> 继续加固 provider、gateway、fetch、trace</td>
+              <td>infra 越透明，模型越能发挥已有推理能力。</td>
+            </tr>
+            <tr>
+              <td>Regression Suite</td>
+              <td><span class="badge blue">扩充</span> 以该 trace 为第一枚 Golden Fixture</td>
+              <td>用多 case 覆盖区级/市级、指南/预算、官方/转载、搜索/fetch 等边界。</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>6. 下一步建议</h2>
+        <ul>
+          <li>将该 trace 复制或登记为 <code>fixtures/golden/live-audit-shanghai-medical-subsidy-putuo-2026.json</code>。</li>
+          <li>为上述 8 条最低断言写一个轻量 regression checker。</li>
+          <li>新增 2-3 个反例 fixture：市级政策、非官方转载诱饵、开放申请指南，以验证边界管理不会只在本 case 上成立。</li>
+          <li>Infrastructure 每次改动后先跑 Golden Fixture，再讨论是否需要 Prompt 变更。</li>
+        </ul>
+      </section>
+
+      <details>
+        <summary>Structured knowledge payload（供知识库摄取）</summary>
+        <pre><code>{
+  "document_envelope": {
+    "document_id": "doc-local-policy-agent-golden-fixture-putuo-2026-medical-subsidy",
+    "document_type": "evaluation_framework_baseline",
+    "title": "Golden Fixture 审计标杆：上海普陀区 2026 医疗卫生补贴 Trace",
+    "created_at": "2026-06-05",
+    "created_by": "Claude Code",
+    "agent_name": "Claude Code",
+    "project": "local-policy-agent",
+    "team": "policy-agent-evaluation",
+    "source_session": "cc-connect-session",
+    "taxonomy_version": "v1"
+  },
+  "items": [
+    {
+      "item_id": "ki-putuo-golden-summary-001",
+      "item_type": "summary",
+      "title": "Putuo 2026 medical subsidy trace qualifies as a Golden Fixture",
+      "content": "The live-audit trace demonstrates official-source validation, substantive amount extraction, jurisdiction boundary control, and non-official source suppression.",
+      "status": "confirmed",
+      "confidence": "high",
+      "source_refs": ["/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-openai/debug-trace.json#events[23-25]"],
+      "owner": "policy-agent-evaluation",
+      "tags": ["golden-fixture", "live-audit", "heavy-prompt", "policy-agent", "putuo", "medical-subsidy"],
+      "created_at": "2026-06-05",
+      "updated_at": "2026-06-05",
+      "taxonomy_version": "v1"
+    },
+    {
+      "item_id": "ki-putuo-golden-decision-001",
+      "item_type": "decision",
+      "title": "Freeze Heavy Prompt optimization for this baseline",
+      "content": "Do not optimize or slim the Heavy Prompt based on this case; use the trace as an infrastructure regression baseline instead.",
+      "status": "confirmed",
+      "confidence": "high",
+      "source_refs": ["/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-openai/debug-trace.json#events[23-25]"],
+      "owner": "policy-agent-evaluation",
+      "tags": ["decision", "heavy-prompt", "regression-suite"],
+      "created_at": "2026-06-05",
+      "updated_at": "2026-06-05",
+      "taxonomy_version": "v1",
+      "decision_scope": "project",
+      "rationale": "The trace shows the current Heavy Prompt already performs high-quality evidence discipline in a real live-audit run; further semantic patches risk disrupting working behavior.",
+      "effective_from": "2026-06-05"
+    },
+    {
+      "item_id": "ki-putuo-golden-evidence-001",
+      "item_type": "evidence",
+      "title": "Agent selected official Shanghai Putuo source and rejected non-official source",
+      "content": "The final reasoning cites the official Shanghai Putuo government page as the source of authority metadata and amount clauses, while shui5.cn is explicitly discarded as non-official.",
+      "status": "confirmed",
+      "confidence": "high",
+      "source_refs": ["/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-openai/debug-trace.json#events[23-25]"],
+      "owner": "policy-agent-evaluation",
+      "tags": ["evidence", "official-source", "noise-suppression"],
+      "created_at": "2026-06-05",
+      "updated_at": "2026-06-05",
+      "taxonomy_version": "v1",
+      "evidence_type": "log",
+      "source_locator": "/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-openai/debug-trace.json#events[23-25]",
+      "supports_item_ids": ["ki-putuo-golden-summary-001", "ki-putuo-golden-decision-001"]
+    },
+    {
+      "item_id": "ki-putuo-golden-insight-001",
+      "item_type": "insight",
+      "title": "Jurisdiction and application-scope uncertainty should be preserved in policy-agent outputs",
+      "content": "High-quality policy-agent answers should explicitly preserve distinctions such as district-level versus citywide policy and internal budget allocation versus public application guide.",
+      "status": "confirmed",
+      "confidence": "high",
+      "source_refs": ["/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-openai/debug-trace.json#events[23-25]"],
+      "owner": "policy-agent-evaluation",
+      "tags": ["insight", "jurisdiction", "uncertainty", "policy-agent"],
+      "created_at": "2026-06-05",
+      "updated_at": "2026-06-05",
+      "taxonomy_version": "v1",
+      "derived_from": ["ki-putuo-golden-evidence-001"],
+      "applicability": "Policy search, subsidy discovery, government-document extraction, and live-audit evaluation.",
+      "confidence_basis": "The trace preserved both Putuo district-level limitation and non-public-application-guide limitation while still completing the task."
+    },
+    {
+      "item_id": "ki-putuo-golden-action-001",
+      "item_type": "action_item",
+      "title": "Add Golden Fixture regression checker",
+      "content": "Create a lightweight checker that asserts official URL, issuing authority, policy ID, substantive amount clauses, uncertainty boundaries, and non-official source exclusion for this trace.",
+      "status": "proposed",
+      "confidence": "high",
+      "source_refs": ["/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-openai/debug-trace.json#events[23-25]"],
+      "owner": "policy-agent-evaluation",
+      "tags": ["action-item", "regression-checker", "golden-fixture"],
+      "created_at": "2026-06-05",
+      "updated_at": "2026-06-05",
+      "taxonomy_version": "v1",
+      "assignee": "policy-agent-evaluation",
+      "due_at": "unscheduled",
+      "action_status": "todo"
+    },
+    {
+      "item_id": "ki-putuo-golden-artifact-001",
+      "item_type": "artifact_ref",
+      "title": "Golden trace source artifact",
+      "content": "Debug trace for the live-audit Shanghai medical subsidy OpenAI run.",
+      "status": "confirmed",
+      "confidence": "high",
+      "source_refs": ["/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-openai/debug-trace.json"],
+      "owner": "policy-agent-evaluation",
+      "tags": ["artifact-ref", "debug-trace"],
+      "created_at": "2026-06-05",
+      "updated_at": "2026-06-05",
+      "taxonomy_version": "v1",
+      "artifact_type": "document",
+      "artifact_uri": "/Users/lingion/repo-downloads/local-policy-agent/outputs/live-audit-shanghai-medical-subsidy-openai/debug-trace.json",
+      "relation_type": "source"
+    }
+  ]
+}</code></pre>
+      </details>
+    </main>
+  </body>
+</html>

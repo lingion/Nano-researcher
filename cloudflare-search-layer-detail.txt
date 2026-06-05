@@ -1,0 +1,756 @@
+Cloudflare 线上版本 search-mcp.qdp.qzz.io 搜索层实现与核心逻辑总说明
+
+来源说明：
+- 线上版本健康接口： https://search-mcp.qdp.qzz.io/healthz
+- 本地对应仓库： /Users/lingion/repo-downloads/search-mcp-worker-kerry
+- 路由配置： /Users/lingion/repo-downloads/search-mcp-worker-kerry/wrangler.toml
+- 当前线上健康返回版本： 0.7.4
+- 当前线上 build_timestamp： 2026-05-27T00:00:00Z
+
+==================================================
+一、这份 TXT 是什么
+==================================================
+
+这份说明只写 Cloudflare 线上版本（search-mcp.qdp.qzz.io）当前搜索层的实现与核心逻辑。
+
+重点不是本地 local-policy-agent，而是线上 deployed Search MCP Worker：
+- 它暴露哪些搜索工具
+- search_auto 在里面是怎么工作的
+- 各层逻辑怎么分
+- 关键实现函数在哪里
+- 它和本地版要对齐的核心点是什么
+
+==================================================
+二、线上版本基本信息
+==================================================
+
+当前线上健康信息（实测）：
+- name: search-mcp-worker
+- version: 0.7.4
+- build_timestamp: 2026-05-27T00:00:00Z
+- mcp_endpoint: https://search-mcp.qdp.qzz.io/mcp
+
+路由配置本地仓库对应：
+- wrangler.toml
+
+核心内容：
+```toml
+name = "search-mcp-worker"
+main = "src/index.js"
+compatibility_date = "2026-04-08"
+
+[[routes]]
+pattern = "search-mcp.qdp.qzz.io/*"
+zone_name = "qdp.qzz.io"
+```
+
+说明：
+- 线上自定义域名 search-mcp.qdp.qzz.io 指向 Cloudflare Worker
+- 主入口代码来自本地仓库的 src/index.js
+
+==================================================
+三、线上版本暴露的公共工具面
+==================================================
+
+当前线上 healthz 实测可见工具包括：
+
+General web search:
+- search_auto
+- search_duckduckgo
+- search_bing
+- search_bing_global
+- search_bing_cn
+- search_yahoo
+- search_google_web
+- search_baidu
+- search_yandex
+- search_naver
+- search_sogou
+
+News / research / developer / vertical:
+- search_archive
+- search_arxiv
+- search_pubmed
+- search_hackernews
+- search_stackoverflow
+- search_reddit
+- search_npm
+- search_devto
+- search_mastodon
+- search_peertube
+- search_bbc
+- search_bing_news
+- search_sina_news
+- search_163_news
+- search_paperswithcode
+- search_sec_edgar
+- search_osm
+- search_lemmy
+- search_wikidata
+- search_crates
+- search_pypi
+- search_wiktionary
+- search_openlibrary
+- search_musicbrainz
+- search_crossref
+- search_wikipedia
+- search_github_repos
+
+Fetch / utility:
+- fetch_github_file
+- fetch_metadata
+- fetch_url
+- instant_answer
+- find_rss
+- debug_capture_search_html
+
+说明：
+- search_auto 是默认总入口
+- 其余 search_* 是具体 source / engine / vertical adapter
+- fetch_* 是独立抓取层，不属于 search_auto 本体
+
+==================================================
+四、整体分层结构
+==================================================
+
+Cloudflare 线上搜索层可以分成 6 层：
+
+1. Worker / MCP transport 层
+2. Tool registry 层
+3. search_auto 路由与编排层
+4. 具体 engine/source adapter 层
+5. 结果过滤 / 质量判断 / 分类路由层
+6. 结果合并 / 重排 / 响应构造层
+
+--------------------------------------------------
+4.1 Worker / MCP transport 层
+--------------------------------------------------
+
+文件：
+- src/index.js
+
+功能：
+- 处理 /healthz
+- 处理 /mcp
+- 实现 initialize / tools/list / tools/call
+
+这是整个线上 Search MCP 的运行壳层。
+
+==================================================
+五、Tool registry 层
+==================================================
+
+文件：
+- src/index.js
+- src/mcp/tool-schemas.js
+
+--------------------------------------------------
+5.1 工具定义表
+--------------------------------------------------
+
+在 src/index.js 里，工具表从大约 70 行开始：
+
+```js
+var TOOLS = [
+  {
+    name: "search_auto",
+    description: "Search multiple engines, merge usable results, and rerank the best matches automatically.",
+    inputSchema: querySchema({ engines: true, autoMode: true })
+  },
+  {
+    name: "search_duckduckgo",
+    ...
+  },
+  {
+    name: "search_bing",
+    ...
+  },
+  ...
+]
+```
+
+说明：
+- 每个 public tool 都在这里注册
+- search_auto 明确是总入口
+- schema 允许：
+  - query
+  - limit
+  - auto_mode
+  - engines
+
+--------------------------------------------------
+5.2 schema 层
+--------------------------------------------------
+
+文件：
+- src/mcp/tool-schemas.js
+
+核心代码：
+
+```js
+export function querySchema(extra = {}) {
+  const properties = {
+    query: { type: 'string', description: 'Search query' },
+    limit: { type: 'number', description: 'Maximum results, default 5, max 10' }
+  };
+
+  if (extra.autoMode) {
+    properties.auto_mode = {
+      type: 'string',
+      description: 'Auto aggregation mode: default uses intent-aware engines; full fans out across all enabled public search engines before reranking.'
+    };
+  }
+
+  if (extra.engines) {
+    properties.engines = {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Optional engine order: duckduckgo, bing, yahoo, google, yandex, baidu, naver, sogou, wikipedia, arxiv, pubmed, hackernews, stackoverflow, reddit, npm, devto, mastodon, peertube, bbc, bing_news, archive, paperswithcode, sec_edgar, osm, lemmy, wikidata, crates, pypi, ollama'
+    };
+  }
+
+  return { type: 'object', properties, required: ['query'] };
+}
+```
+
+说明：
+- search_auto 本身就允许：
+  - auto_mode
+  - engines
+- 这证明 search_auto 是默认调度层，不是单 source
+
+==================================================
+六、search_auto 路由与编排层
+==================================================
+
+文件：
+- src/index.js
+
+这是线上版本最核心的部分。
+
+--------------------------------------------------
+6.1 search_auto 默认 engine 选择
+--------------------------------------------------
+
+核心函数：
+- defaultSearchAutoEngines(query)
+- fullSearchAutoEngines(query)
+- selectSearchAutoEngines(args)
+
+### defaultSearchAutoEngines(query)
+位置大约：1063 行
+
+```js
+function defaultSearchAutoEngines(query) {
+  const intent = detectSearchIntent(query);
+  if (intent.isChinese) return ["sogou", "bing_cn", "bing_news", "baidu", "bing_global", "brave", "duckduckgo", "google", "yahoo", "yandex"];
+  if (intent.isNews) return ["bbc", "bing_news", "bing_global", "brave", "duckduckgo", "google", "yahoo", "archive"];
+  if (intent.isDeveloper) return ["github_repos", "stackoverflow", "npm", "devto", "hackernews", "brave", "duckduckgo", "bing_global", "google"];
+  return ["bing_global", "duckduckgo", "google", "yahoo", "brave", "sogou", "baidu", "yandex", "naver", "archive", "wikipedia"];
+}
+```
+
+说明：
+- auto 默认不是一套固定 engines
+- 它先根据意图分：
+  - 中文
+  - 新闻
+  - developer
+  - generic
+- 然后给出不同的默认 engine 顺序
+
+### fullSearchAutoEngines(query)
+位置大约：1072 行
+
+```js
+function fullSearchAutoEngines(query) {
+  const defaults = defaultSearchAutoEngines(query);
+  const publicEngines = [
+    "bing_global", "bing_cn", "bing_news", "duckduckgo", "google", "yahoo", "brave", "sogou", "baidu", "yandex", "naver", "bbc", "archive", "wikipedia", "github_repos", "stackoverflow", "npm", "devto", "hackernews", "reddit", "arxiv", "pubmed", "paperswithcode", "sec_edgar", "osm", "lemmy", "wikidata", "crates", "pypi"
+  ];
+  return [...new Set([...defaults, ...publicEngines])];
+}
+```
+
+说明：
+- full 模式会把默认 engines 和 public engine 全集并起来
+- 然后去重
+
+### selectSearchAutoEngines(args)
+位置大约：1123 行
+
+```js
+function selectSearchAutoEngines(args) {
+  const autoMode = String(args?.auto_mode || "").toLowerCase();
+  const requested = autoMode === "full"
+    ? fullSearchAutoEngines(args.query)
+    : Array.isArray(args.engines) && args.engines.length
+      ? args.engines
+      : defaultSearchAutoEngines(args.query);
+
+  const normalized = requested.map((name) => String(name).toLowerCase()).filter(Boolean);
+  const unique = [];
+  for (const engine of normalized) {
+    ... provider enable/disable filtering ...
+    unique.push(engine);
+  }
+  if (hasCjkText(args?.query)) {
+    const chinesePriority = ["sogou", "bing_cn", "bing_news", "baidu", "bing_global"];
+    unique.sort(...)
+  }
+  return unique;
+}
+```
+
+说明：
+- auto_mode=full 时，直接走 fullSearchAutoEngines
+- 如果显式传了 engines，就按 engines 走
+- 否则走 defaultSearchAutoEngines
+- 中文 query 会再按优先级排序
+
+--------------------------------------------------
+6.2 query category / family routing
+--------------------------------------------------
+
+核心函数：
+- detectSearchAutoCategory(query)
+- classifySearchAutoCategoryIntent(category, query)
+- getSearchAutoCategoryBundleHosts(category)
+- runSearchAutoCategoryBundle(args, category)
+
+### detectSearchAutoCategory(query)
+位置大约：1149 行
+
+当前识别类别包括：
+- policy
+- flights
+- jobs
+- anime
+
+示例代码：
+
+```js
+if (/(政策|规定|条例|通知|公告|通告|办法|禁烟|政府|发布)|.../.test(text)) {
+  return "policy";
+}
+```
+
+说明：
+- 这一步不是最终结果分类，而是决定要不要走某个 category bundle
+
+### classifySearchAutoCategoryIntent(category, query)
+位置大约：1173 行
+
+输出：
+- strong
+- medium
+- none
+
+policy 类时，会看：
+- 是否有 policy terms
+- 是否有 official body
+- 是否有文档形态
+- query 是否短而聚焦
+
+说明：
+- 不是所有包含 policy 词的 query 都同等处理
+- 先判强意图 / 弱意图
+
+### getSearchAutoCategoryBundleHosts(category)
+位置大约：1225 行
+
+policy 类当前 bundle host：
+
+```js
+if (category === "policy") return ["gov.cn", "samr.gov.cn", "ndrc.gov.cn", "miit.gov.cn", "moe.gov.cn"];
+```
+
+这很关键，说明线上 auto 的 policy family 已经内建了：
+- gov.cn
+- samr.gov.cn
+- ndrc.gov.cn
+- miit.gov.cn
+- moe.gov.cn
+
+### runSearchAutoCategoryBundle(args, category)
+位置大约：1288 行
+
+它会：
+1. 取 category 对应的 host 列表
+2. 针对每个 host 组合出：
+   - `site:${host} ${args.query}`
+3. 用 auto 选出来的 engine 集合逐个跑
+4. 过滤结果
+5. 判断是不是 answer page
+6. 记录 attempts
+7. 收 acceptedResults
+
+这说明线上 auto 不只是简单 engines 并行，而是已经有：
+- **按 query family 路由到特定 host bundle**
+- 再用多个 engine 去打这些 host
+
+==================================================
+七、具体 engine/source adapter 层
+==================================================
+
+文件：
+- src/index.js
+
+核心函数：
+- runSearchEngine(engine, args)
+
+位置大约：1375 行
+
+```js
+async function runSearchEngine(engine, args) {
+  if (engine === "duckduckgo") return await searchDuckDuckGo(args);
+  if (engine === "bing") return await searchBing(args);
+  if (engine === "bing_global") return await searchBingGlobal(args);
+  if (engine === "bing_cn") return await searchBingCn(args);
+  if (engine === "yahoo") return await searchYahoo(args);
+  if (engine === "google") return await searchGoogle(args);
+  if (engine === "yandex") return await searchYandex(args);
+  if (engine === "baidu") return await searchBaidu(args);
+  if (engine === "wikipedia") return await searchWikipedia(args);
+  if (engine === "naver") return await searchNaver(args);
+  if (engine === "sogou") return await searchSogou(args);
+  if (engine === "archive") return await searchArchive(args);
+  if (engine === "arxiv") return await searchArxiv(args);
+  ...
+  if (engine === "github_repos") return await searchGitHubRepos(args);
+  if (engine === "find_rss") return await findRss(args);
+  return null;
+}
+```
+
+说明：
+- search_auto 自己不直接搜
+- 它最终还是调这些具体 source adapter
+- 这层就是“source / engine 实现层”
+
+==================================================
+八、过滤与质量判断层
+==================================================
+
+文件：
+- src/index.js
+
+当前最关键的函数有：
+- filterSearchAutoResults(...)
+- isSearchAutoCategoryAnswerPage(...)
+- scoreSearchAutoCategoryFit(...)
+- evaluateSearchQuality(...)
+- buildSearchAutoAttempt(...)
+
+--------------------------------------------------
+8.1 filterSearchAutoResults
+--------------------------------------------------
+
+位置大约：1424 行
+
+```js
+function filterSearchAutoResults(results, query, engine = "") {
+  const filteredResults = [];
+  let mismatchCount = 0;
+  for (const item of Array.isArray(results) ? results : []) {
+    if (isHardIntentMismatchResult(item, query, engine) || isForeignLanguageDriftResult(item, query, engine)) {
+      mismatchCount++;
+      continue;
+    }
+    filteredResults.push(item);
+  }
+  const filteredCount = ...
+  const filteredReason = ...
+  return { filteredResults, filteredCount, filteredReason };
+}
+```
+
+说明：
+- 这里已经不是简单“拿到结果就收”
+- 会过滤掉：
+  - 明显 intent mismatch
+  - 明显语言漂移
+
+--------------------------------------------------
+8.2 isSearchAutoCategoryAnswerPage
+--------------------------------------------------
+
+位置大约：1250 行
+
+这个函数会判断某条结果是不是这个 category 真正的“答案页”。
+
+以 policy 类为例：
+
+```js
+if (category === "policy") {
+  if (/频道|栏目|导航|索引|入口|汇总|解读/.test(content)) return false;
+  if (/\/(?:zhengce|zcwj)\/?$/i.test(normalizedPath)) return false;
+  return /\/(?:content|article|detail|t\d{8}_\d+|\d{6,})(?:\.html?)?$/i.test(normalizedPath)
+    || /通知|公告|通告|办法|条例|规定|正文/.test(content);
+}
+```
+
+说明：
+- policy 类里，频道页 / 栏目页 / 导航页 / 汇总页会被排除
+- 更偏向：
+  - 真实正文页
+  - 真实政策条目页
+
+这比本地版当前只有“official_or_policy_like”已经细很多。
+
+--------------------------------------------------
+8.3 scoreSearchAutoCategoryFit
+--------------------------------------------------
+
+位置大约：1513 行
+
+这个函数专门给 category 匹配度打分。
+
+policy 类时：
+- gov.cn / samr / ndrc / miit / moe 等 host 强加分
+- `/zhengce/`、`/zcwj/`、`content`、`t2026...` 这类正文路径强加分
+- `政策 / 通知 / 公告 / 条例 / 办法 / 发布 / 正文 / 官方` 再加分
+- `解读 / 汇总 / 热点 / 入口 / 导航 / 频道 / 栏目` 扣分
+
+说明：
+- 线上 auto 已经在做比较强的 policy-grade reranking
+
+--------------------------------------------------
+8.4 scoreSearchAutoResult
+--------------------------------------------------
+
+位置大约：1550 行
+
+它综合：
+- quality_status 权重
+- engine 内部 rank 权重
+- multi-source 权重
+- token match 权重
+- official host 权重
+- generic wrapper penalty
+- intent mismatch penalty
+- low trust penalty
+- category fit 权重
+
+也就是说：
+- 最终排序不是简单 source 顺序
+- 而是一个多维加权模型
+
+==================================================
+九、结果合并 / 重排 / 响应构造层
+==================================================
+
+文件：
+- src/index.js
+
+--------------------------------------------------
+9.1 mergeSearchAutoResults
+--------------------------------------------------
+
+位置大约：1574 行
+
+```js
+function mergeSearchAutoResults(collectedResults, limit, query = "") {
+  const byUrl = new Map();
+  for (const item of collectedResults) {
+    const url = String(item?.url || "").trim();
+    if (!url) continue;
+    const candidate = { ...item, score: scoreSearchAutoResult(item, query) };
+    const existing = byUrl.get(url);
+    if (!existing || candidate.score > existing.score) {
+      ... merge sources ...
+      byUrl.set(url, ...)
+      continue;
+    }
+    ... merge sources and increase score ...
+  }
+  return [...byUrl.values()]
+    .sort((a, b) => b.score - a.score || a.rank_within_engine - b.rank_within_engine)
+    .slice(0, clampLimit(limit))
+    .map(({ score, ...item }) => item);
+}
+```
+
+说明：
+- 线上 auto 的结果合并不是简单 dedupe
+- 它会：
+  - 合并同 URL 多源命中
+  - 保留 sources
+  - 多源命中还会给额外权重
+
+--------------------------------------------------
+9.2 buildSearchAutoResponse
+--------------------------------------------------
+
+位置大约：1596 行
+
+这是最终返回层，会输出：
+- ok
+- source
+- query
+- limit
+- results
+- sources
+- attempts
+- fallback_used
+- quality_status
+- quality_reason
+- filtered_count
+- merged_count
+- deduped_count
+- auto_mode
+
+成功时：
+
+```js
+return {
+  ok: true,
+  source: aggregateSource,
+  query: ...,
+  limit: ...,
+  results: mergedResults,
+  ...timeMetadata,
+  generated_at: ...,
+  sources: contributingSources,
+  attempts,
+  fallback_used: attempts.length > 1,
+  quality_status: finalQuality,
+  quality_reason: finalQuality === "green" ? "usable_results" : "usable_with_minor_noise",
+  filtered_count: ...,
+  merged_count: acceptedResults.length,
+  deduped_count: Math.max(0, acceptedResults.length - mergedResults.length),
+  auto_mode: autoMode,
+  ...
+}
+```
+
+失败时：
+- 也会返回 attempts
+- 并带：
+  - blocked / empty / red 等 quality_status
+  - no_results / only_junk_results / no_useful_results 等 quality_reason
+
+==================================================
+十、真正的 search_auto 主函数
+==================================================
+
+文件：
+- src/index.js
+
+函数：
+- searchAuto(args)
+
+位置大约：1676 行
+
+它做的事按顺序是：
+
+1. 选 engines
+```js
+const engines = selectSearchAutoEngines(args);
+```
+
+2. 检测是否有 category
+```js
+const category = detectSearchAutoCategory(args.query);
+const categoryIntent = classifySearchAutoCategoryIntent(category, args.query);
+```
+
+3. 如果 category 是 strong，就先跑 category bundle
+```js
+if (!siteTarget && category && categoryIntent === "strong") {
+  const categoryBundle = await runSearchAutoCategoryBundle(args, category);
+  attempts.push(...categoryBundle.attempts);
+  acceptedResults.push(...categoryBundle.acceptedResults);
+}
+```
+
+4. 再跑各个 engine
+```js
+for (const engine of engines) {
+  const { quality, enrichedResult } = await runSearchAutoEngine(engine, args, siteTarget);
+  attempts.push(buildSearchAutoAttempt(engine, enrichedResult, quality));
+  if (quality green/yellow) acceptedResults.push(...usableResults)
+}
+```
+
+5. 最后统一 buildSearchAutoResponse
+```js
+const final = buildSearchAutoResponse({ args, engines, attempts, acceptedResults, siteTarget });
+```
+
+这就是线上 search_auto 的真正内核。
+
+==================================================
+十一、线上版本的核心特征总结
+==================================================
+
+1. search_auto 是默认总入口，不是 source。
+2. 它先做 query intent / category 路由。
+3. 它能走 category bundle（例如 policy bundle）。
+4. 它会再逐个 engine 尝试。
+5. 每个尝试都有 quality_status / quality_reason。
+6. 结果合并不是简单 dedupe，而是带分数、多源增强的 merge。
+7. 最终响应会带 rich metadata：
+   - attempts
+   - sources
+   - fallback_used
+   - filtered_count
+   - merged_count
+   - deduped_count
+   - quality_status
+   - quality_reason
+
+==================================================
+十二、它和本地版本当前的主要差距
+==================================================
+
+本地 local-policy-agent 现在已经补上了：
+- 官方 provider feed into auto
+- sources
+- attempts
+- quality_status
+- quality_reason
+
+但和线上 Cloudflare 版本相比，仍然缺：
+
+1. 更细的质量状态
+- 线上：green / yellow / blocked / empty / red / junk / intent_mismatch 等
+- 本地：目前只有 green / yellow
+
+2. 运行统计
+- 线上有：
+  - fallback_used
+  - filtered_count
+  - merged_count
+  - deduped_count
+- 本地目前还没有这些
+
+3. category bundle 路由深度
+- 线上对 policy / jobs / flights / anime 都有专门 bundle
+- policy 还有官方域 bundle（gov.cn / samr / ndrc / miit / moe）
+- 本地目前 policy route 还只是国内优先 engines + 官方 provider feed-in
+
+4. 更强的 official-policy reranking
+- 线上已经会区分频道页 / 栏目页 / 汇总页 / 正文页
+- 本地目前只是 official_or_policy_like / weak_homepage_like / unclassified_result
+
+==================================================
+十三、一句话总结
+==================================================
+
+Cloudflare 线上版本的 search_auto 本质上是：
+
+- 一个带 query intent routing 的多源搜索编排器
+- 一个带质量状态机的结果过滤器
+- 一个带多源权重合并的重排器
+- 一个会把 attempts / sources / fallback / counts 全部显式暴露给调用方的结果汇总器
+
+它不是“选几个搜索引擎然后并起来”这么简单，而是一套：
+- 路由
+- 尝试
+- 过滤
+- 质量判断
+- 合并
+- 响应构造
+
+的完整搜索层实现。

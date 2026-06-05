@@ -1,0 +1,11 @@
+node_modules/
+dist/
+output/
+output-live/
+outputs/
+workspace/
+.env
+.env.*
+*.sqlite
+*.db
+.tmp-*

@@ -1,0 +1,386 @@
+local-policy-agent 项目总整理
+
+一、项目最终目标
+
+这个项目不是一个泛搜索玩具，而是一个面向政策 / 招商 / 惠企 / 兑现 / 企业服务的信息发现与取证工具。
+
+最终目标可以概括为：
+
+1. 默认搜索层是 auto 层。
+2. auto 层负责聚合多路搜索入口的结果，统一做过滤、去重、重排，再把结果池喂给模型。
+3. 模型默认先用 auto，不在没有特别情况时乱调别的入口。
+4. 整个工具要尽量脱离线上 Search MCP，走本地自己的搜索层 / provider 层 / MCP 层。
+5. 项目主方向始终是政策 / 招商，不是泛领域 query 分类实验。
+
+二、一路以来的主要计划与目标演进
+
+阶段 0：先做一个本地可跑的 policy agent 骨架
+- 有任务输入
+- 有 state
+- 有模型决策
+- 有 search / fetch
+- 有 artifacts
+
+阶段 1：先把 search / fetch 做成能用的本地工具层
+- searchWithCloudflareLocal
+- WebSearch
+- DuckDuckGo HTML fallback
+- Baidu HTML fallback
+- dedupe / canonicalize / rerank
+- fetchWithLocalPrimary
+- WebFetch
+- raw fetch fallback
+- Readability
+- gov 内容清洗
+
+阶段 2：从 wrapper 往融合层推进
+- providerSearches seam
+- canonical URL 合并
+- title normalize
+- duplicate merge
+- strong result stop
+- weak result fallback
+- official/general source together merge
+
+阶段 3：明确 search_auto 的真实定位
+- search_auto 不是 source
+- search_auto 是默认搜索层 / auto 层 / 路由层 / 聚合层
+- 具体 search_* 才是 source / engine / adapter
+- fetch_* 是独立抓取层
+
+阶段 4：围绕 auto 层做默认主路径
+- 一度扩了很多 query taxonomy（政策、学术、新闻、developer、地图、人物等）
+- 后来被纠偏：项目主目标是政策招商，不该继续在无关 query 上发散
+
+阶段 5：收紧政策 / 招商默认 source set
+从较宽的 policy route 收紧到国内优先的默认 source set：
+- baidu
+- sogou
+- bing
+- bing_news
+- sina_news
+- 163_news
+
+阶段 6：开始补全国官方入口
+要求从“候选站点名字”升级到：
+- 真爬到本地
+- 分析入口
+- 分析参数
+- 分析 API
+- 以实测打通为准
+
+最终围绕三个全国官方入口收束：
+- NDRC
+- MIIT
+- gov.cn / 国务院政策文件库
+
+阶段 7：把官方入口接入默认搜索层
+曾经走偏到：
+- 把官方 provider 接到 agent wrapper 前面，差点变成 bypass auto
+
+后来纠正为：
+- 官方 provider feed into auto
+- auto 统一重排后喂给模型
+
+阶段 8：开始往 Kerry / Cloudflare auto 靠拢
+最近开始补 richer metadata：
+- sources
+- attempts
+
+下一步准备继续补：
+- quality_status
+- quality_reason
+- fallback_used
+- filtered_count / merged_count / deduped_count
+
+三、当前架构：各层怎么实现
+
+1. Agent 层
+职责：
+- 接收任务
+- 维护 state
+- 让模型做决策
+- 执行 search / fetch
+- 产出 artifacts
+
+关键文件：
+- src/app/run-policy-task.ts
+- src/runtime/run-local-policy-agent.ts
+- src/runtime/local-session-loop.ts
+- src/policy-task/prompt-builder.ts
+
+2. Auto 路由层
+职责：
+- 根据 query 决定默认 engine/source 组合
+- 这是默认搜索层的策略入口
+
+关键文件：
+- src/search-fusion/auto-router.ts
+
+当前对政策类 query 默认给：
+- baidu
+- sogou
+- bing
+- bing_news
+- sina_news
+- 163_news
+
+它现在还是一个较轻量的 router，不是完整的多轮 orchestrator。
+
+3. 官方 provider 层
+职责：
+- 直接调用全国官方入口
+- 把结果转成统一的 SearchDiscoveryRecord
+
+关键文件：
+- src/search-fusion/official-policy-entrances.ts
+
+当前已有三个 provider：
+- createNdrcPolicySearchProvider(...)
+- createMiitPolicySearchProvider(...)
+- createGovCnPolicyLibraryProvider(...)
+
+4. Search fusion / auto 合成层
+职责：
+- 收 provider 结果
+- 收 WebSearch / auto 结果
+- 必要时收 HTML fallback 结果
+- 统一 normalize / dedupe / rerank / metadata merge
+
+关键文件：
+- src/search-fusion/cloudflare-search-local.ts
+
+当前输入来源：
+- providerSearches
+- globalThis.WebSearch
+- HTML fallback（DDG / Baidu）
+
+当前统一处理：
+- normalizeSearchDiscovery(...)
+- canonicalizeUrl(...)
+- normalizeTitle(...)
+- dedupeSearchResults(...)
+- rankSearchResults(...)
+
+当前元数据：
+- sources
+- attempts
+
+attempts.stage 可能值：
+- provider
+- websearch
+- html-fallback
+
+5. Fetch 层
+职责：
+- 从 URL 抓正文 / 页面证据
+- 提供 title / content / finalUrl 等证据
+
+关键文件：
+- src/fetch-fusion/local-fetch-primary.ts
+
+当前路径：
+1. WebFetch
+2. raw fetch fallback
+3. Readability
+4. gov 内容清洗
+
+6. Artifact / trace 层
+职责：
+- 把运行结果落成可审计产物
+
+关键文件：
+- src/artifacts/write-task-summary.ts
+- src/artifacts/write-result-audit.ts
+- src/artifacts/write-run-transcript.ts
+- src/artifacts/write-report-html.ts
+
+输出：
+- task-summary.json
+- result-audit.json
+- run-transcript.json
+- debug-trace.json
+- report.html
+
+四、已经完成了什么
+
+A. 本地 policy agent 骨架：已完成
+B. fetch 层基本可用：已完成
+C. search fusion 基础层已成型：已完成
+D. policy route 默认 general 国内优先集：已完成
+E. 三个全国官方入口已打穿：已完成
+F. 官方入口 adapter 已实现：已完成
+G. 官方 provider 已经开始喂进 auto 层：已完成
+H. sources / attempts 元数据已开始有了：已完成
+
+五、三个全国官方入口当前状态
+
+1. NDRC：已打穿
+真实 API：
+- https://fwfx.ndrc.gov.cn/api/query
+
+已验证 query：
+- 招商
+- 投资
+- 营商环境
+- 企业服务
+- 政策兑现
+- 免申即享
+
+定位：
+- 全国宏观政策 / 投资 / 营商环境 / 企业服务 / 政策兑现入口
+
+2. MIIT：已打穿
+真实接口链：
+- /search-front-server/api/structure/list-searchmanager
+- /search-front-server/api/structure/list-category
+- /search-front-server/api/search/info
+
+已验证主入口：
+- searchid=1
+- cateid=47
+
+补充入口：
+- searchid=174
+- cateid=186
+
+定位：
+- 工业和信息化、制造业、专精特新、中小企业发展环境、高新区等全国政策入口
+
+3. gov.cn / 国务院政策文件库：已打穿
+前端壳页：
+- https://sousuo.www.gov.cn/zcwjk/policyDocumentLibrary
+- https://sousuo.www.gov.cn/wap/search-result?...
+
+真实后端通道：
+- host: https://sousuoht.www.gov.cn
+- API: /athena/forward/2B22E8E39E850E17F95A016A74FCB6B673336FA8B6FEC0E2955907EF9AEE06BE
+
+已打通：
+- 真实请求认证头
+- 真实结果 JSON
+- 可返回国务院政策 / 批复 / 公告等结果
+
+定位：
+- 国务院及中央层面的政策正文 / 公告 / 批复发现入口
+
+六、当前默认政策搜索主路径
+
+当前默认政策/招商 mainline 结构：
+
+第一层：全国官方入口 provider
+- ndrc-policy-search
+- miit-policy-search
+- gov-cn-policy-library-search
+
+第二层：国内优先 general 搜索入口
+- baidu
+- sogou
+- bing
+- bing_news
+- sina_news
+- 163_news
+
+当前正确架构是：
+- 官方 provider 不绕过 auto
+- 官方 provider 先喂给 auto
+- auto 再和 general 搜索一起统一重排
+- 模型默认吃的是 auto 重排后的统一结果池
+
+七、当前仍然存在的主要差距
+
+1. auto 还不够像 Kerry / Cloudflare 那边的成熟 auto
+当前仍缺：
+- quality_status
+- quality_reason
+- fallback_used
+- filtered_count
+- merged_count
+- deduped_count
+- 更细的 official-policy grade reranking
+
+2. 官方 provider 和 general source 的关系还能继续优化
+需要继续明确：
+- 哪个官方 provider 更优先
+- 不同 query 下优先哪个 provider
+- provider 结果弱时如何处理
+- provider 结果强时如何影响总排序
+
+3. auto-router 仍偏轻
+当前仍更像：
+- query 分类器 + engine list 生成器
+而不是完整：
+- source orchestration engine
+- attempt planner
+- fallback planner
+
+4. 本地 MCP 工具层还没有完全收束成最终你想要的统一 surface
+虽然搜索逻辑已经越来越本地化，但“本地 MCP 工具层”作为统一 surface 这件事，还没完全整理到最干净的形态。
+
+八、前面走偏过的地方
+
+1. 曾经把 search_auto 当 source
+这是错的。现在已经纠正：
+- search_auto = 默认搜索层 / auto 层 / 路由层
+- 具体 search_* = source / provider
+
+2. 曾经把官方 provider 接错层
+一开始差点变成：
+- provider 抢先截停
+- 绕过 auto
+
+现在已纠正为：
+- provider feed into auto
+- auto 统一重排后喂模型
+
+3. 曾经在政策工具里扩太多无关 query taxonomy
+后来已经被收回主线，回到：
+- 政策
+- 招商
+- 惠企
+- 兑现
+- 企业服务
+
+4. 曾经只列全国入口候选，没有真爬站点
+后来已经改正，三个全国官方入口都是真爬、真逆、真打穿。
+
+九、最关键的下一步
+
+如果继续沿最值钱的主线推进，优先顺序应该是：
+
+第一优先：补 auto richer metadata
+- quality_status
+- quality_reason
+
+第二优先：补运行级统计元数据
+- fallback_used
+- filtered_count
+- merged_count
+- deduped_count
+
+第三优先：加强 official-policy grade reranking
+区分：
+- 官方正文
+- 政策解读
+- 新闻转载
+- 门户首页
+- 栏目页
+- 活动稿
+
+十、一句话总总结
+
+local-policy-agent 现在已经不是一个本地小 wrapper，而是在朝下面这个方向走：
+
+- 一个本地 policy / investment-promotion agent
+- 默认搜索层是 auto
+- auto 吸收全国官方入口 + 国内优先 general 搜索
+- 统一重排后把结果池喂给模型
+- fetch 负责证据层验证
+
+当前最核心的事情已经完成：
+- 三个全国官方入口打穿
+- 接入默认 policy 搜索主路径
+- 官方 provider feed into auto 而不是 bypass auto
+
+当前最核心的差距也已经明确：
+- 本地 auto 还缺 Kerry / Cloudflare 那一层 richer metadata 与更强质量控制内核

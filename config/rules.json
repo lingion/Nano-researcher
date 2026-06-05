@@ -1,0 +1,8 @@
+{
+  "trusted_domains": [".gov.cn", ".npc.gov.cn", ".org.cn"],
+  "derivative_keywords": ["解读", "一图读懂", "新闻通稿", "问答", "报道"],
+  "pdf_elevation": true,
+  "default_search_engines": ["bing_cn", "baidu", "sogou", "bing"],
+  "default_search_limit": 10,
+  "default_fetch_max_chars": 24000
+}
