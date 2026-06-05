@@ -13,4 +13,6 @@ export interface PolicyAgentState {
   transcriptPath?: string;
   currentIteration: number;
   uncertainties: string[];
+  convergencePhase?: 'post_convergence_review' | 'final_summary';
+  targetValidatedEvidenceCount?: number;
 }

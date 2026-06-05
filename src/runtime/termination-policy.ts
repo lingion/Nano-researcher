@@ -13,8 +13,12 @@ export function assessLoopTermination(input: {
     reason?: string;
   };
   agentDecisionType?: string;
+  convergencePhase?: 'post_convergence_review' | 'final_summary';
 }): TerminationAssessment {
-  if (input.agentDecisionType === 'finalize' || input.agentDecisionType === 'stop') {
+  if (
+    (input.agentDecisionType === 'finalize' || input.agentDecisionType === 'stop')
+    && input.convergencePhase !== 'post_convergence_review'
+  ) {
     return {
       shouldBreak: true,
       interruptedByGate: false,

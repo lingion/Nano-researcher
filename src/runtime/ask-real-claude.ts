@@ -279,6 +279,7 @@ function normalizeCompositeDecision(
       finalPackage: payload,
       uncertainties: Array.isArray(payload.uncertainties) ? payload.uncertainties : [],
       discardedLeads: Array.isArray(payload.discardedLeads) ? payload.discardedLeads : [],
+      evidenceAssessments: Array.isArray(payload.evidenceAssessments) ? payload.evidenceAssessments as PolicyAgentDecision['evidenceAssessments'] : [],
     };
   }
 
@@ -287,6 +288,7 @@ function normalizeCompositeDecision(
     reasoning: simpleJudgment ?? 'Need additional official-source searches before continuing.',
     searchActions,
     fetchActions,
+    evidenceAssessments: Array.isArray(payload.evidenceAssessments) ? payload.evidenceAssessments as PolicyAgentDecision['evidenceAssessments'] : [],
     finalPackage: payload,
     uncertainties: Array.isArray(payload.uncertainties) ? payload.uncertainties : [],
     discardedLeads: Array.isArray(payload.discardedLeads) ? payload.discardedLeads : [],
@@ -415,6 +417,7 @@ function legacyNormalizeDecision(
     reasoning: payload.reasoning ?? 'No reasoning returned.',
     searchActions: Array.isArray(payload.searchActions) ? payload.searchActions : [],
     fetchActions: explicitFetchActions,
+    evidenceAssessments: Array.isArray(payload.evidenceAssessments) ? payload.evidenceAssessments as PolicyAgentDecision['evidenceAssessments'] : [],
     finalPackage: payload.finalPackage ?? payload,
     uncertainties: Array.isArray(payload.uncertainties) ? payload.uncertainties : [],
     discardedLeads: Array.isArray(payload.discardedLeads) ? payload.discardedLeads : [],
@@ -422,6 +425,20 @@ function legacyNormalizeDecision(
 }
 
 function normalizeDecision(payload: Partial<PolicyAgentDecision> & Record<string, unknown>): PolicyAgentDecision {
+  const explicitDecision = typeof payload.decision === 'string' ? payload.decision.trim() : '';
+  if (explicitDecision === 'summarize_and_stop') {
+    return {
+      decision: 'summarize_and_stop',
+      reasoning: pickNonEmptyString(payload.reasoning, payload.reason, payload.message, 'Summarizing and stopping.') ?? 'Summarizing and stopping.',
+      searchActions: [],
+      fetchActions: [],
+      evidenceAssessments: Array.isArray(payload.evidenceAssessments) ? payload.evidenceAssessments as PolicyAgentDecision['evidenceAssessments'] : [],
+      finalPackage: payload.finalPackage ?? payload,
+      uncertainties: Array.isArray(payload.uncertainties) ? payload.uncertainties : [],
+      discardedLeads: Array.isArray(payload.discardedLeads) ? payload.discardedLeads : [],
+    };
+  }
+
   const stopDecision = payload.stopDecision && typeof payload.stopDecision === 'object'
     ? (payload.stopDecision as Record<string, unknown>)
     : null;

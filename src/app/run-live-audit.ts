@@ -40,9 +40,7 @@ export async function main(env: LiveAuditEnv = process.env): Promise<void> {
       console.log(formatLiveAuditDebugEvent(event));
     },
   });
-  const ownedToolset = process.env.POLICY_SEARCH_BACKEND === 'search-mcp'
-    ? await createSearchMcpTools()
-    : null;
+  const ownedToolset = await createSearchMcpTools();
 
   try {
     const result = await runLiveAudit(runtime, {

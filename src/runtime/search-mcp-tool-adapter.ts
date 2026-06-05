@@ -21,7 +21,7 @@ export interface SearchMcpToolOptions {
 const DEFAULT_SEARCH_LIMIT = 8;
 const DEFAULT_FETCH_MAX_CHARS = 20000;
 const DEFAULT_ENGINES = ['bing_cn', 'baidu', '360', 'sogou', 'bing'];
-const DEFAULT_WORKER_URL = new URL('../../vendor/search-mcp/worker-entry.js', import.meta.url);
+const DEFAULT_WORKER_URL = new URL('../../vendor/search-mcp/src/stdio-server.js', import.meta.url);
 
 export function resolveSearchMcpWorkerPath(env: Pick<NodeJS.ProcessEnv, 'SEARCH_MCP_WORKER_PATH'> = process.env): string {
   return env.SEARCH_MCP_WORKER_PATH || fileURLToPath(DEFAULT_WORKER_URL);

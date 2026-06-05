@@ -13,6 +13,40 @@ test('policy prompt encodes search/fetch boundaries and agent-owned business jud
   assert.match(prompt, /Do not assume discovery snippets are equal to fetched evidence/i);
   assert.match(prompt, /Return JSON only/i);
 });
+test('policy prompt allows relaxed exploration for ambiguous national research before stopping', () => {
+  const prompt = buildPolicyPrompt();
+
+  assert.match(prompt, /CORE CONSTRAINT: RELAXED EXPLORATION/i);
+  assert.match(prompt, /You are NOT restricted by a low iteration count/i);
+  assert.match(prompt, /prioritize definition research until you have a clear, official understanding/i);
+  assert.match(prompt, /autonomously shift query focus to "Policy \/ Subsidy \/ Industry Framework"/i);
+  assert.match(prompt, /Only stop when you have found substantive evidence of policy support/i);
+  assert.match(prompt, /exhausted all credible official government\/national sources/i);
+});
+
+test('policy prompt requires saturation assessment before redundant national searches', () => {
+  const prompt = buildPolicyPrompt();
+
+  assert.match(prompt, /CORE CONSTRAINT: SATURATION & STOP/i);
+  assert.match(prompt, /Evaluate if further search iterations are likely to yield substantive evidence/i);
+  assert.match(prompt, /at least 2 official government\/authority sources/i);
+  assert.match(prompt, /DO NOT perform another search/i);
+  assert.match(prompt, /transition to FETCH or STOP immediately/i);
+  assert.match(prompt, /Avoid Redundant Research/i);
+  assert.match(prompt, /CONCLUDED_NEGATIVE/i);
+});
+
+test('policy prompt routes national and acronym-ambiguous tasks before applying local arsenals', () => {
+  const prompt = buildPolicyPrompt();
+
+  assert.match(prompt, /CORE CONSTRAINT: TASK SCOPE ROUTING/i);
+  assert.match(prompt, /classify the task as NATIONAL, PROVINCIAL, LOCAL, or ACRONYM_AMBIGUOUS/i);
+  assert.match(prompt, /If the user task uses "全国"/i);
+  assert.match(prompt, /DO NOT apply any specific provincial\/local\/park-level arsenal/i);
+  assert.match(prompt, /ambiguous acronyms such as OPC/i);
+  assert.match(prompt, /first search query MUST target definition, industry standard/i);
+  assert.match(prompt, /No generic national query may contain 黑龙江, 哈尔滨, 上海普陀, 普陀区/i);
+});
 
 test('policy prompt enforces radar-first discovery and forbids stopping on news reprints or portal homepages', () => {
   const prompt = buildPolicyPrompt();
@@ -45,14 +79,48 @@ test('policy prompt forces mandatory fetch transition once candidates exist and 
   assert.match(prompt, /If your `discoveredCandidates` already contains URLs from official government or authority domains/i);
 });
 
+test('policy prompt forces fetch after search saturation and prioritizes official national candidates for acronym tasks', () => {
+  const prompt = buildPolicyPrompt();
+
+  assert.match(prompt, /CORE CONSTRAINT: FORCED DECISION DYNAMICS/i);
+  assert.match(prompt, /If `discoveredCandidates` count > 5 AND `currentIteration` > 2/i);
+  assert.match(prompt, /MUST FETCH the top 2 candidates immediately/i);
+  assert.match(prompt, /3 consecutive SEARCH iterations without a FETCH action/i);
+  assert.match(prompt, /The next iteration MUST be a FETCH action/i);
+  assert.match(prompt, /ndrc\.gov\.cn/i);
+  assert.match(prompt, /This is not a perfect policy document/i);
+  assert.match(prompt, /not a valid reason to skip a \.gov\.cn source/i);
+  assert.match(prompt, /at least 3 fetches of high-authority sources/i);
+  assert.match(prompt, /CONCLUDED_NEGATIVE/i);
+});
+test('policy prompt defines evidence classification protocol and convergence summary signal', () => {
+  const prompt = buildPolicyPrompt();
+
+  assert.match(prompt, /EVIDENCE CLASSIFICATION PROTOCOL/i);
+  assert.match(prompt, /Mandatory Post-Fetch Analysis/i);
+  assert.match(prompt, /GOLD_STANDARD/i);
+  assert.match(prompt, /SILVER_STANDARD/i);
+  assert.match(prompt, /NOISE/i);
+  assert.match(prompt, /Only `GOLD_STANDARD` and `SILVER_STANDARD` count as validated evidence/i);
+  assert.match(prompt, /convergencePhase: "post_convergence_review"/i);
+  assert.match(prompt, /convergencePhase: "final_summary"/i);
+  assert.match(prompt, /decision: "summarize_and_stop"/i);
+});
+test('policy prompt forbids finalizing after fetch without explicit evidence assessments', () => {
+  const prompt = buildPolicyPrompt();
+
+  assert.match(prompt, /After every FETCH action, you must immediately classify the fetched content quality in your next decision step/i);
+  assert.match(prompt, /For each newly fetched page you assess, emit an `evidenceAssessments` item/i);
+  assert.match(prompt, /You MUST NOT output `finalize`, `stop`, or `summarize_and_stop` after a fetch round unless every newly fetched page in scope has been classified in `evidenceAssessments`/i);
+});
 test('policy prompt hardens legal input fields legal output schema and forbidden legacy action fields', () => {
   const prompt = buildPolicyPrompt();
 
   assert.match(prompt, /Only use these input fields: `task`, `currentIteration`, `discoveredCandidates`, `fetchedEvidence`, `uncertainties`/i);
   assert.match(prompt, /The incoming JSON uses camelCase state fields, not snake_case aliases/i);
   assert.match(prompt, /Do not ignore `discoveredCandidates` just because it is not named `discovered_candidates`/i);
-  assert.match(prompt, /The only legal top-level output fields are: `current_evidence_meta_check`, `decision`, `reasoning`, `searchActions`, `fetchActions`, `uncertainties`, `discardedLeads`/i);
-  assert.match(prompt, /`decision` must be exactly one of: `continue_search`, `continue_fetch`, `finalize`, `stop`/i);
+  assert.match(prompt, /The only legal top-level output fields are: `current_evidence_meta_check`, `decision`, `reasoning`, `searchActions`, `fetchActions`, `evidenceAssessments`, `uncertainties`, `discardedLeads`, `final_package`/i);
+  assert.match(prompt, /`decision` must be exactly one of: `continue_search`, `continue_fetch`, `finalize`, `stop`, `summarize_and_stop`/i);
   assert.match(prompt, /Never emit legacy fields such as `status`, `type`, `next_actions`, `nextActions`, or `recommendedNextActions`/i);
   assert.match(prompt, /Do not wrap the JSON in markdown or code fences/i);
 });
@@ -126,7 +194,7 @@ test('policy prompt adds slim final package stop-gate with clause traceability a
   const prompt = buildPolicyPrompt();
 
   assert.match(prompt, /TERMINAL CLOSURE: BUSINESS-FOCUSED OUTCOME PACKAGING/i);
-  assert.match(prompt, /The only legal top-level output fields are: `current_evidence_meta_check`, `decision`, `reasoning`, `searchActions`, `fetchActions`, `uncertainties`, `discardedLeads`, `final_package`/i);
+  assert.match(prompt, /The only legal top-level output fields are: `current_evidence_meta_check`, `decision`, `reasoning`, `searchActions`, `fetchActions`, `evidenceAssessments`, `uncertainties`, `discardedLeads`, `final_package`/i);
   assert.match(prompt, /You may ONLY output `"decision": "stop"` if you can satisfy these three conditions/i);
   assert.match(prompt, /substantive_math_clauses/i);
   assert.match(prompt, /source_url/i);
