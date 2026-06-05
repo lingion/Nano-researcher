@@ -2,42 +2,100 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { askRealClaudeDecision } from '../../src/runtime/ask-real-claude.ts';
 
-
-test('real Claude askAgent maps recommendedNextActions search plans into executable search actions', async () => {
+test('real Claude askAgent preserves structured evidence assessments and summarize_and_stop decision', async () => {
   const decision = await askRealClaudeDecision(
     {
-      task: { topic: '绥化市科技招商政策' },
+      task: { topic: '全国 OPC 政策' },
       discoveredCandidates: [],
-      fetchedEvidence: [],
-      currentIteration: 0,
+      fetchedEvidence: [
+        {
+          requestedUrl: 'https://www.ndrc.gov.cn/wsdwhfz/202605/t20260515_1405211.html',
+          finalUrl: 'https://www.ndrc.gov.cn/wsdwhfz/202605/t20260515_1405211.html',
+          title: 'NDRC OPC page',
+          content: 'content',
+          backend: 'fetch',
+        },
+      ],
+      currentIteration: 3,
       uncertainties: [],
+      convergencePhase: 'final_summary',
+      targetValidatedEvidenceCount: 3,
     },
     {
       callModel: async () => JSON.stringify({
-        status: 'needs_search',
-        finalJudgment: {
-          conclusion: '目前无可用证据，无法形成业务可用政策结论。',
-        },
-        recommendedNextActions: [
+        decision: 'summarize_and_stop',
+        reasoning: 'Validated evidence threshold reached. Summarizing and stopping.',
+        searchActions: [],
+        fetchActions: [],
+        evidenceAssessments: [
           {
-            action: 'search',
-            priority: 1,
-            reason: '先定位政府官网正式政策文件。',
-            queries: [
-              '绥化市 科技招商 政策 site:.gov.cn',
-              '绥化市 科技局 招商 政策 site:.gov.cn',
-            ],
+            url: 'https://www.ndrc.gov.cn/wsdwhfz/202605/t20260515_1405211.html',
+            qualityCategory: 'SILVER_STANDARD',
+            validationReason: 'Official 2026 NDRC page clarifying OPC as One Person Company trend evidence.',
           },
         ],
-        uncertainties: ['科技招商政策可能不是单独文件。'],
+        uncertainties: [],
+        discardedLeads: [],
+        finalPackage: {
+          status: 'FINAL_ASSERTION_STOP',
+          summary: 'OPC has official trend evidence but no verified national subsidy rule.',
+        },
       }),
     },
   );
 
-  assert.equal(decision.decision, 'continue_search');
-  assert.equal(decision.searchActions.length, 2);
-  assert.match(decision.searchActions[1]?.query ?? '', /科技局/);
-  assert.match(decision.reasoning, /无可用证据|业务可用政策结论/);
+  assert.equal(decision.decision, 'summarize_and_stop');
+  assert.equal(decision.evidenceAssessments?.length, 1);
+  assert.equal(decision.evidenceAssessments?.[0]?.qualityCategory, 'SILVER_STANDARD');
+  assert.match(decision.evidenceAssessments?.[0]?.validationReason ?? '', /Official 2026 NDRC page/i);
+  assert.equal(decision.searchActions.length, 0);
+  assert.equal(decision.fetchActions.length, 0);
+});
+
+
+
+test('real Claude askAgent preserves finalize when evidence assessments are present after fetched evidence exists', async () => {
+  const decision = await askRealClaudeDecision(
+    {
+      task: { topic: '常州市 医疗补贴' },
+      discoveredCandidates: [],
+      fetchedEvidence: [
+        {
+          requestedUrl: 'https://www.changzhou.gov.cn/gi_news/514167688209091',
+          finalUrl: 'https://www.changzhou.gov.cn/gi_news/514167688209091',
+          title: '常医保服务〔2023〕7号',
+          content: 'content',
+          backend: 'fetch',
+        },
+      ],
+      currentIteration: 2,
+      uncertainties: [],
+    },
+    {
+      callModel: async () => JSON.stringify({
+        decision: 'finalize',
+        reasoning: 'Fetched evidence has been classified and is sufficient for a scoped conclusion.',
+        searchActions: [],
+        fetchActions: [],
+        evidenceAssessments: [
+          {
+            url: 'https://www.changzhou.gov.cn/gi_news/514167688209091',
+            qualityCategory: 'SILVER_STANDARD',
+            validationReason: 'Official Changzhou医保局 notice with explicit fund amount.',
+          },
+        ],
+        uncertainties: [],
+        discardedLeads: [],
+        finalPackage: {
+          status: 'FINAL_ASSERTION_STOP',
+        },
+      }),
+    },
+  );
+
+  assert.equal(decision.decision, 'finalize');
+  assert.equal(decision.evidenceAssessments?.length, 1);
+  assert.equal(decision.evidenceAssessments?.[0]?.qualityCategory, 'SILVER_STANDARD');
 });
 
 test('real Claude askAgent treats NEEDS_RADAR_SEARCH with shouldStop false as continue_search even without explicit search actions', async () => {
