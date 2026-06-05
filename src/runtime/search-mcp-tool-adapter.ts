@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url';
+
 import { Client } from '@modelcontextprotocol/sdk/client';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio';
 
@@ -19,7 +21,11 @@ export interface SearchMcpToolOptions {
 const DEFAULT_SEARCH_LIMIT = 8;
 const DEFAULT_FETCH_MAX_CHARS = 20000;
 const DEFAULT_ENGINES = ['bing_cn', 'baidu', '360', 'sogou', 'bing'];
-const DEFAULT_WORKER_PATH = '/Users/lingion/repo-downloads/search-mcp-worker-kerry/src/stdio-server.js';
+const DEFAULT_WORKER_URL = new URL('../../vendor/search-mcp/worker-entry.js', import.meta.url);
+
+export function resolveSearchMcpWorkerPath(env: Pick<NodeJS.ProcessEnv, 'SEARCH_MCP_WORKER_PATH'> = process.env): string {
+  return env.SEARCH_MCP_WORKER_PATH || fileURLToPath(DEFAULT_WORKER_URL);
+}
 
 function toEnvRecord(input: Record<string, string | undefined>): Record<string, string> {
   return Object.fromEntries(
@@ -122,7 +128,7 @@ export async function createSearchMcpTools(options: SearchMcpToolOptions = {}): 
   fetchTool: FetchTool;
   close: () => Promise<void>;
 }> {
-  const workerPath = process.env.SEARCH_MCP_WORKER_PATH || DEFAULT_WORKER_PATH;
+  const workerPath = resolveSearchMcpWorkerPath();
   const command = options.command || 'node';
   const args = options.args || [workerPath];
   const env = toEnvRecord({

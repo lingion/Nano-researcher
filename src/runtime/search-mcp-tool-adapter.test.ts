@@ -1,8 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { resolveSearchMcpWorkerPath } from './search-mcp-tool-adapter.js';
 import type { SearchDiscoveryRecord } from '../search-fusion/types.js';
-import type { FetchedPageRecord } from '../fetch-fusion/types.js';
+test('search MCP worker path defaults to a repository-relative vendored worker', () => {
+  const workerPath = resolveSearchMcpWorkerPath({});
+
+  assert.match(workerPath, /vendor\/search-mcp\/worker-entry\.js$/);
+  assert.doesNotMatch(workerPath, /search-mcp-worker-kerry/);
+});
 
 test('search MCP adapter contract maps Kerry-style search and fetch records', () => {
   const candidate: SearchDiscoveryRecord = {

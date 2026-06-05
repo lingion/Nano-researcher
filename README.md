@@ -8,7 +8,59 @@ Standalone local policy agent runtime built on top of transplanted NanoClaw orch
 - Fetch retrieves page evidence only.
 - Business judgment lives in prompts and agent outputs, not code rules.
 
-## Quick start
+## Zero-config startup checklist
+
+Use this section when cloning the repository on a fresh machine.
+
+### Runtime versions
+
+This project is validated with:
+
+- Node.js: `v22.21.0` (see `.nvmrc`)
+- pnpm: `10.33.0`
+
+If you use `nvm`:
+
+```bash
+nvm use
+corepack enable
+```
+
+### Fresh install and build
+
+```bash
+pnpm install
+pnpm build
+```
+
+`pnpm-lock.yaml` is committed and should be used as the dependency lockfile.
+
+### Offline Golden Fixture regression
+
+This check does not require live credentials or network access:
+
+```bash
+pnpm test:fixture
+```
+
+It validates the archived Shanghai Putuo 2026 medical subsidy trace under:
+
+- `fixtures/live-audit/shanghai-medical-subsidy-debug-trace.json`
+- `fixtures/live-audit/shanghai-medical-subsidy-golden-fixture-evaluation-baseline.html`
+
+### Live audit configuration
+
+Copy `.env.example` to `.env` and fill in the gateway values before running live audit:
+
+```bash
+cp .env.example .env
+```
+
+Required live variables:
+
+- `NANOCLAW_LLM_PROVIDER=openai`
+- `NANOCLAW_BASE_URL`
+- `NANOCLAW_API_KEY`
 
 Live audit runs should pin the NanoClaw gateway protocol explicitly. For the current OpenAI-compatible gateway baseline, set:
 
@@ -21,13 +73,11 @@ pnpm live-audit
 
 `NANOCLAW_LLM_PROVIDER=openai` is part of the production startup contract: do not rely on automatic provider inference for the OpenAI-compatible gateway path.
 
+## Dev smoke test
+
 ```bash
 pnpm test
 ```
-
-Expected once scaffolding is complete:
-- the test command exists
-- it runs the project test suite
 
 ## Current milestone
 

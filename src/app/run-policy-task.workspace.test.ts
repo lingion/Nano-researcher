@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { runPolicyTaskLoop } from './run-policy-task.ts';
-import type { FetchTool, SearchTool } from '../runtime/tool-registry.ts';
+const originalCwd = process.cwd();
 
 function createNoopSearchTool(): SearchTool {
   return {
@@ -101,7 +101,7 @@ test('runPolicyTaskLoop persists fetched evidence into workspace index and evide
     assert.equal(persisted.seen_count, 1);
     assert.equal(fs.existsSync(path.join(workspaceRoot, persisted.evidence_path)), true);
   } finally {
-    process.chdir('/Users/lingion/repo-downloads/local-policy-agent');
+    process.chdir(originalCwd);
     fs.rmSync(repoRoot, { recursive: true, force: true });
   }
 });
@@ -133,7 +133,7 @@ test('runPolicyTaskLoop reuses the same document and increments seen_count on re
     assert.equal(evidenceRecord.seen_count, 2);
     assert.equal(evidenceRecord.record.kerry_cleaning?.metadata?.document_number, '黑科规〔2026〕1号');
   } finally {
-    process.chdir('/Users/lingion/repo-downloads/local-policy-agent');
+    process.chdir(originalCwd);
     fs.rmSync(repoRoot, { recursive: true, force: true });
   }
 });

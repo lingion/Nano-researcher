@@ -6,9 +6,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "tsx --test \"__tests__/**/*.test.ts\" \"src/**/*.test.ts\"",
-    "start": "node ./dist/app/index.js",
+    "start": "pnpm live-audit",
     "policy-scanner": "tsx bin/policy-scanner.ts",
-    "live-audit": "tsx src/app/run-live-audit.ts"
+    "live-audit": "tsx src/app/run-live-audit.ts",
+    "test:fixture": "tsx --test __tests__/fixtures/golden-live-audit.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.154",

@@ -6,6 +6,7 @@ outputs/
 workspace/
 .env
 .env.*
+!.env.example
 *.sqlite
 *.db
 .tmp-*
