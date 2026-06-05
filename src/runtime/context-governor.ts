@@ -55,23 +55,10 @@ export function candidateEvidenceScore(candidate: PolicyAgentState['discoveredCa
 
 export function governLLMActiveView(
   rawCandidates: PolicyAgentState['discoveredCandidates'],
-  currentTurnAnchorUrl?: string,
-  config: GovernorConfig = { maxGeneralCandidatesCount: 2 },
+  _currentTurnAnchorUrl?: string,
+  _config: GovernorConfig = { maxGeneralCandidatesCount: 2 },
 ): PolicyAgentState['discoveredCandidates'] {
-  const normalizedCandidates = normalizeDiscoveryCandidates(rawCandidates);
-  const officialCandidates = normalizedCandidates.filter((candidate) => candidate.policy_grade === 'official_text');
-  const poolToPrune = normalizedCandidates.filter((candidate) => candidate.policy_grade !== 'official_text');
-  const anchorCandidate = currentTurnAnchorUrl
-    ? poolToPrune.find((candidate) => candidate.url === currentTurnAnchorUrl)
-    : undefined;
-  const retainedGeneralCandidates = [...poolToPrune]
-    .filter((candidate) => candidate.url !== anchorCandidate?.url)
-    .sort((left, right) => candidateEvidenceScore(right) - candidateEvidenceScore(left))
-    .slice(0, anchorCandidate ? Math.max(0, config.maxGeneralCandidatesCount - 1) : config.maxGeneralCandidatesCount);
-  const prunedGeneralCandidates = [...(anchorCandidate ? [anchorCandidate] : []), ...retainedGeneralCandidates]
-    .sort((left, right) => candidateEvidenceScore(right) - candidateEvidenceScore(left));
-
-  return [...officialCandidates, ...prunedGeneralCandidates];
+  return normalizeDiscoveryCandidates(rawCandidates);
 }
 
 export function pruneDiscoveryContext(
