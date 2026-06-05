@@ -4,6 +4,8 @@ output/
 output-live/
 outputs/
 workspace/
+!src/workspace/
+!src/workspace/**
 .env
 .env.*
 !.env.example
