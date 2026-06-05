@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
@@ -22,6 +23,27 @@ test('package exposes offline fixture regression and portable start scripts', ()
 
   assert.equal(packageJson.scripts?.['test:fixture'], 'tsx --test __tests__/fixtures/golden-live-audit.test.ts');
   assert.equal(packageJson.scripts?.start, 'pnpm live-audit');
+});
+
+test('git-tracked source includes workspace modules required by live audit', () => {
+  const trackedFiles = execFileSync('git', ['ls-files', 'src/workspace/*.ts'], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+  }).trim().split('\n').filter(Boolean);
+
+  assert.deepEqual(
+    trackedFiles.sort(),
+    [
+      'src/workspace/atomic-json.ts',
+      'src/workspace/evidence-identity.ts',
+      'src/workspace/evidence-manager.ts',
+      'src/workspace/evidence-store.ts',
+      'src/workspace/evidence-workspace-paths.ts',
+      'src/workspace/index.ts',
+      'src/workspace/persistent-fetch-tool.ts',
+      'src/workspace/report-manager.ts',
+    ],
+  );
 });
 
 test('package dependencies use explicit semver ranges', () => {
