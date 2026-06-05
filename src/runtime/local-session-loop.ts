@@ -3,6 +3,32 @@ import type { PolicyAgentDecision } from '../policy-task/output-schema.js';
 import type { SearchTool, FetchTool } from './tool-registry.js';
 import type { DebugEvent } from './ask-real-claude.js';
 
+function validatedEvidenceCount(fetched: PolicyAgentState['fetchedEvidence']): number {
+  return fetched.filter((page) => page.qualityCategory === 'GOLD_STANDARD' || page.qualityCategory === 'SILVER_STANDARD').length;
+}
+function applyEvidenceAssessments(
+  fetched: PolicyAgentState['fetchedEvidence'],
+  decision: PolicyAgentDecision,
+): PolicyAgentState['fetchedEvidence'] {
+  if (!decision.evidenceAssessments?.length) {
+    return fetched;
+  }
+
+  const assessments = new Map(decision.evidenceAssessments.map((item) => [item.url, item]));
+  return fetched.map((page) => {
+    const assessment = assessments.get(page.finalUrl) ?? assessments.get(page.requestedUrl);
+    if (!assessment) {
+      return page;
+    }
+
+    return {
+      ...page,
+      qualityCategory: assessment.qualityCategory,
+      validationReason: assessment.validationReason,
+    };
+  });
+}
+
 function serializeError(error: unknown): Record<string, unknown> {
   if (error instanceof Error) {
     return {
@@ -33,6 +59,31 @@ export async function runOneSessionIteration(
       decision,
     },
   });
+
+  const preActionFetched = applyEvidenceAssessments([...state.fetchedEvidence], decision);
+  if (
+    state.convergencePhase === 'post_convergence_review'
+    && decision.decision !== 'summarize_and_stop'
+  ) {
+    const nextState = {
+      ...state,
+      fetchedEvidence: preActionFetched,
+      currentIteration: state.currentIteration + 1,
+      uncertainties: decision.uncertainties,
+    };
+
+    deps.onDebugEvent?.({
+      type: 'state.updated',
+      payload: {
+        state: nextState,
+      },
+    });
+
+    return {
+      decision,
+      state: nextState,
+    };
+  }
 
   const discovered = [...state.discoveredCandidates];
   for (const [index, action] of decision.searchActions.entries()) {
@@ -139,10 +190,39 @@ export async function runOneSessionIteration(
   const nextState = {
     ...state,
     discoveredCandidates: discovered,
-    fetchedEvidence: fetched,
+    fetchedEvidence: applyEvidenceAssessments(fetched, decision),
     currentIteration: state.currentIteration + 1,
     uncertainties: decision.uncertainties,
   };
+
+  const effectiveDecision = state.convergencePhase === 'final_summary' && decision.decision !== 'summarize_and_stop'
+    ? {
+        ...decision,
+        decision: 'summarize_and_stop' as const,
+        reasoning: decision.reasoning || 'Validated evidence threshold reached. Summarize and stop.',
+        searchActions: [],
+        fetchActions: [],
+      }
+    : decision;
+
+  if (state.convergencePhase === 'final_summary' && effectiveDecision.decision === 'summarize_and_stop') {
+    const finalizedState = {
+      ...nextState,
+      convergencePhase: undefined,
+    };
+
+    deps.onDebugEvent?.({
+      type: 'state.updated',
+      payload: {
+        state: finalizedState,
+      },
+    });
+
+    return {
+      decision: effectiveDecision,
+      state: finalizedState,
+    };
+  }
 
   deps.onDebugEvent?.({
     type: 'state.updated',
