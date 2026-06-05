@@ -87,7 +87,47 @@ Relevant files:
 
 ---
 
-## 3. 环境要求 / Requirements
+## 3. Prompt 契约重点 / Prompt contract highlights
+
+当前 prompt contract 明确约束了输入、输出和抓取节奏。  
+The current prompt contract explicitly constrains inputs, outputs, and fetch cadence.
+
+### 3.1 输入状态 / Input state
+
+模型应只依赖这些输入字段：  
+The model should rely only on these input fields:
+
+- `task`
+- `currentIteration`
+- `discoveredCandidates`
+- `fetchedEvidence`
+- `uncertainties`
+- `convergencePhase`
+- `targetValidatedEvidenceCount`
+
+这意味着 summary 阶段和验证阈值本身也是 prompt contract 的一部分，不再是“隐藏上下文”。  
+This means the summary phase and validated-evidence threshold are part of the visible prompt contract, not hidden runtime context.
+
+### 3.2 fetchActions 规则 / fetchActions rules
+
+`continue_fetch` 的输出必须满足：  
+A `continue_fetch` output must satisfy all of the following:
+
+- `fetchActions` 不能为空  
+  `fetchActions` must not be empty
+- 如果 `discoveredCandidates` 里已经有官方 URL，必须原样拷贝进 `fetchActions`  
+  If `discoveredCandidates` already contains official URLs, they must be copied into `fetchActions` verbatim
+- 单轮通常只允许 **1–2 个 fetchActions**  
+  A round normally allows only **1–2 fetchActions**
+- 只有 prompt 明确进入强制多抓取场景时，才允许超过 2 个  
+  More than 2 is only allowed when the prompt explicitly enters a forced multi-fetch transition
+
+这个限制是为了防止一轮里抓太多页面，把上下文和证据判断搞乱。  
+This limit exists to prevent over-fetching in one round and degrading context quality and evidence judgment.
+
+---
+
+## 4. 环境要求 / Requirements
 
 已验证运行版本：  
 Validated runtime versions:
@@ -105,7 +145,7 @@ corepack enable
 
 ---
 
-## 4. 安装 / Install
+## 5. 安装 / Install
 
 ```bash
 pnpm install
@@ -114,7 +154,7 @@ pnpm build
 
 ---
 
-## 5. 环境变量 / Environment
+## 6. 环境变量 / Environment
 
 先复制示例文件：  
 Copy the example file first:
@@ -148,27 +188,27 @@ Notes:
 
 ---
 
-## 6. 常用命令 / Common commands
+## 7. 常用命令 / Common commands
 
-### 6.1 Build
+### 7.1 Build
 
 ```bash
 pnpm build
 ```
 
-### 6.2 全量测试 / Full test suite
+### 7.2 全量测试 / Full test suite
 
 ```bash
 pnpm test
 ```
 
-### 6.3 离线 Golden Fixture 回归 / Offline golden fixture regression
+### 7.3 离线 Golden Fixture 回归 / Offline golden fixture regression
 
 ```bash
 pnpm test:fixture
 ```
 
-### 6.4 Live audit
+### 7.4 Live audit
 
 ```bash
 pnpm live-audit
@@ -186,7 +226,7 @@ pnpm live-audit
 
 ---
 
-## 7. 当前执行保证 / Current execution guarantees
+## 8. 当前执行保证 / Current execution guarantees
 
 当前 runtime 行为是刻意收紧过的：  
 The current runtime behavior is intentionally stricter than before:
@@ -202,7 +242,7 @@ The current runtime behavior is intentionally stricter than before:
 
 ---
 
-## 8. 仓库内重点文件 / Important files
+## 9. 仓库内重点文件 / Important files
 
 - `src/app/run-live-audit.ts` — live audit 入口  
   live audit entrypoint
@@ -219,7 +259,7 @@ The current runtime behavior is intentionally stricter than before:
 
 ---
 
-## 9. 最近验证基线 / Latest verification baseline
+## 10. 最近验证基线 / Latest verification baseline
 
 近期已经验证通过的关键点：  
 Recently verified outcomes include:
@@ -238,7 +278,7 @@ Recently verified outcomes include:
 
 ---
 
-## 10. 非目标 / Non-goals
+## 11. 非目标 / Non-goals
 
 这个仓库**不打算**做这些事：  
 This repository is **not** trying to do the following:
