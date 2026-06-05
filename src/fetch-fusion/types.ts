@@ -21,4 +21,6 @@ export interface FetchedPageRecord {
   backend: string;
   evidence_clues?: FetchEvidenceClues;
   kerry_cleaning?: KerryCleaningRecord;
+  qualityCategory?: 'GOLD_STANDARD' | 'SILVER_STANDARD' | 'NOISE';
+  validationReason?: string;
 }
