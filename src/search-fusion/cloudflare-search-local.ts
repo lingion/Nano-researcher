@@ -382,14 +382,16 @@ export async function searchWithCloudflareLocal(
   }
 
   if (typeof search === 'function') {
-    console.log('[FORENSIC] triggering real search request', JSON.stringify({
-      query,
-      stage: 'websearch',
-      currentRound: options.currentRound ?? 1,
-      providerResultCount: collectedResults.length,
-      autoMode: options.webSearchArgs?.auto_mode ?? null,
-      engines: options.webSearchArgs?.engines ?? null,
-    }));
+    if (process.env.LIVE_AUDIT_DEBUG === '1') {
+      console.log('[FORENSIC] triggering real search request', JSON.stringify({
+        query,
+        stage: 'websearch',
+        currentRound: options.currentRound ?? 1,
+        providerResultCount: collectedResults.length,
+        autoMode: options.webSearchArgs?.auto_mode ?? null,
+        engines: options.webSearchArgs?.engines ?? null,
+      }));
+    }
 
     const results = await search({
       query,
