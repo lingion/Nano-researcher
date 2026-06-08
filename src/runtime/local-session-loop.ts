@@ -87,14 +87,16 @@ export async function runOneSessionIteration(
 
   const discovered = [...state.discoveredCandidates];
   for (const [index, action] of decision.searchActions.entries()) {
-    console.log('[FORENSIC] consuming search action', JSON.stringify({
-      iteration: state.currentIteration,
-      actionIndex: index,
-      totalSearchActions: decision.searchActions.length,
-      query: action.query,
-      why: action.why,
-      discoveredBefore: discovered.length,
-    }));
+    if (process.env.LIVE_AUDIT_DEBUG === '1') {
+      console.log('[FORENSIC] consuming search action', JSON.stringify({
+        iteration: state.currentIteration,
+        actionIndex: index,
+        totalSearchActions: decision.searchActions.length,
+        query: action.query,
+        why: action.why,
+        discoveredBefore: discovered.length,
+      }));
+    }
 
     deps.onDebugEvent?.({
       type: 'tool.search.request',

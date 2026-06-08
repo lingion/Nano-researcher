@@ -570,14 +570,16 @@ export async function askRealClaudeDecision(
       _raw_model_output: rawText,
     };
 
-    console.log('[FORENSIC] normalized decision output', JSON.stringify({
-      rawStatus: typeof parsed.status === 'string' ? parsed.status : null,
-      normalizedDecision: decision.decision,
-      searchActionCount: decision.searchActions.length,
-      fetchActionCount: decision.fetchActions.length,
-      searchQueries: decision.searchActions.map((action) => action.query),
-      reasoning: decision.reasoning,
-    }));
+    if (process.env.LIVE_AUDIT_DEBUG === '1') {
+      console.log('[FORENSIC] normalized decision output', JSON.stringify({
+        rawStatus: typeof parsed.status === 'string' ? parsed.status : null,
+        normalizedDecision: decision.decision,
+        searchActionCount: decision.searchActions.length,
+        fetchActionCount: decision.fetchActions.length,
+        searchQueries: decision.searchActions.map((action) => action.query),
+        reasoning: decision.reasoning,
+      }));
+    }
 
     options.onDebugEvent?.({
       type: 'model.parsed_decision',

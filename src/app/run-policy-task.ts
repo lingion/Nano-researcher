@@ -5,7 +5,6 @@ import { writeTaskSummary } from '../artifacts/write-task-summary.ts';
 import { writeResultAudit } from '../artifacts/write-result-audit.ts';
 import { writeRunTranscript } from '../artifacts/write-run-transcript.ts';
 import { writeReportHtml } from '../artifacts/write-report-html.ts';
-import { fetchWithLocalPrimary } from '../fetch-fusion/local-fetch-primary.ts';
 import {
   normalizeFetchedEvidenceState,
   pruneDiscoveryContext,
@@ -18,12 +17,6 @@ import type { DebugEvent } from '../runtime/ask-real-claude.ts';
 import type { PolicyAgentDecision } from '../policy-task/output-schema.ts';
 import type { PolicyAgentState } from '../policy-task/state-schema.ts';
 import { createPersistentFetchTool } from '../workspace/persistent-fetch-tool.ts';
-
-function createDefaultFetchTool(): FetchTool {
-  return {
-    fetch: async (url: string) => fetchWithLocalPrimary(url),
-  };
-}
 
 async function createDefaultToolset(): Promise<{
   searchTool: SearchTool;
@@ -113,8 +106,8 @@ export async function runPolicyTaskLoop(
   };
   let fullAuditState: PolicyAgentState = state;
   const ownedToolset = options.searchTool && options.fetchTool ? null : await createDefaultToolset();
-  const searchTool = options.searchTool ?? ownedToolset?.searchTool ?? createDefaultSearchTool();
-  const baseFetchTool = options.fetchTool ?? ownedToolset?.fetchTool ?? createDefaultFetchTool();
+  const searchTool = options.searchTool ?? ownedToolset!.searchTool;
+  const baseFetchTool = options.fetchTool ?? ownedToolset!.fetchTool;
   const fetchTool = createPersistentFetchTool(baseFetchTool, { taskTopic: input.topic });
 
   let lastDecision: PolicyAgentDecision | null = null;
@@ -275,6 +268,7 @@ export async function runPolicyTask(
   };
 
   try {
+    const ownedSearchToolset = await createDefaultToolset();
     const result = await runLocalPolicyAgentIteration(
       {
         task: input,
@@ -285,8 +279,8 @@ export async function runPolicyTask(
       },
       {
         callModel: options.callModel,
-        searchTool: options.searchTool ?? createDefaultSearchTool(),
-        fetchTool: createPersistentFetchTool(options.fetchTool ?? createDefaultFetchTool(), { taskTopic: input.topic }),
+        searchTool: options.searchTool ?? ownedSearchToolset.searchTool,
+        fetchTool: createPersistentFetchTool(options.fetchTool ?? ownedSearchToolset.fetchTool, { taskTopic: input.topic }),
         onDebugEvent,
       },
     );

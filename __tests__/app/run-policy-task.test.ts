@@ -6,6 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildPolicyPrompt } from '../../src/policy-task/prompt-builder.ts';
 import { runPolicyTask } from '../../src/app/run-policy-task.ts';
+import { searchWithCloudflareLocal } from '../../src/search-fusion/cloudflare-search-local.ts';
+import { createNdrcPolicySearchProvider, createMiitPolicySearchProvider, createGovCnPolicyLibraryProvider } from '../../src/search-fusion/official-policy-entrances.ts';
+import type { SearchTool, FetchTool } from '../../src/runtime/tool-registry.ts';
 
 test('thin host runtime files exist', () => {
   const files = [
@@ -122,10 +125,38 @@ test('runPolicyTask feeds official nationwide providers into the default auto se
   };
 
   try {
+    const cloudflareSearchTool: SearchTool = {
+      search: async (query) => {
+        const fetchImpl = async (url: string) => {
+          const response = await globalThis.fetch(url);
+          return { text: async () => response.text() };
+        };
+        const result = await searchWithCloudflareLocal(query, {
+          webSearchArgs: { auto_mode: 'full', engines: ['baidu', 'sogou', 'bing', 'bing_news', 'sina_news', '163_news'] },
+          providerSearches: [
+            createNdrcPolicySearchProvider({ fetchImpl }),
+            createMiitPolicySearchProvider({ fetchImpl }),
+            createGovCnPolicyLibraryProvider({ fetchImpl }),
+          ],
+        });
+        return result.results;
+      },
+    };
+    const localFetchTool: FetchTool = {
+      fetch: async (url) => ({
+        requestedUrl: url,
+        finalUrl: url,
+        title: url,
+        content: '',
+        backend: 'mock-fetch',
+      }),
+    };
     const result = await runPolicyTask(
       { topic: '科技招商政策' },
       {
         outputDir,
+        searchTool: cloudflareSearchTool,
+        fetchTool: localFetchTool,
         callModel: async () => JSON.stringify({
           decision: 'continue_search',
           reasoning: 'Need official candidate URLs first.',
@@ -191,10 +222,27 @@ test('runPolicyTask default search path rewrites junk query candidates to the ma
   globalThis.fetch = async () => new Response(JSON.stringify({ data: { resultList: [] }, success: true, result: { data: { middle: { list: [] } } } }));
 
   try {
+    const cloudflareSearchTool: SearchTool = {
+      search: async (query) => {
+        const result = await searchWithCloudflareLocal(query, {});
+        return result.results;
+      },
+    };
+    const localFetchTool: FetchTool = {
+      fetch: async (url) => ({
+        requestedUrl: url,
+        finalUrl: url,
+        title: url,
+        content: '',
+        backend: 'mock-fetch',
+      }),
+    };
     const result = await runPolicyTask(
       { topic: '招聘租房广告' },
       {
         outputDir,
+        searchTool: cloudflareSearchTool,
+        fetchTool: localFetchTool,
         callModel: async () => JSON.stringify({
           decision: 'continue_search',
           reasoning: 'Need candidate URLs first.',
