@@ -1,4 +1,13 @@
-# local-policy-agent
+<p align="center">
+  <a href="https://github.com/lingion/local-policy-agent/stargazers"><img src="https://img.shields.io/github/stars/lingion/local-policy-agent?style=for-the-badge&logo=github&color=FFD700" alt="Stars"></a>
+  <a href="https://github.com/lingion/local-policy-agent/network/members"><img src="https://img.shields.io/github/forks/lingion/local-policy-agent?style=for-the-badge&logo=github&color=8B5CF6" alt="Forks"></a>
+  <a href="https://github.com/lingion/local-policy-agent/issues"><img src="https://img.shields.io/github/issues/lingion/local-policy-agent?style=for-the-badge&logo=github&color=EF4444" alt="Issues"></a>
+  <a href="https://github.com/lingion/local-policy-agent/blob/main/LICENSE"><img src="https://img.shields.io/github/license/lingion/local-policy-agent?style=for-the-badge&logo=github&color=10B981" alt="License"></a>
+  <br>
+  <a href="https://github.com/lingion/local-policy-agent/commits/main"><img src="https://img.shields.io/github/last-commit/lingion/local-policy-agent?style=flat-square" alt="Last commit"></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Agent-purple?style=flat-square" alt="MCP"></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript"></a>
+</p>
 
 Standalone local policy research runtime with the following core properties:
 
