@@ -32,12 +32,15 @@ export function writeEarlyAccessReport(input: { target: number; items: EarlyAcce
   return { target: input.target, validCount, shortfall, markdown: lines.join('\n') };
 }
 
-export function deriveEarlyAccessItems(pages: FetchedPageRecord[]): EarlyAccessReportItem[] {
+export function deriveEarlyAccessItems(pages: FetchedPageRecord[], window?: DateWindow): EarlyAccessReportItem[] {
   const seen = new Set<string>();
   return pages.flatMap((page) => {
     const key = page.finalUrl ?? page.requestedUrl;
     const scored = scoreEarlyAccessSignals(`${page.title ?? ''}\n${page.content ?? ''}`);
-    if (seen.has(key) || page.freshnessStatus !== 'in_window' || (page.qualityCategory !== 'GOLD_STANDARD' && page.qualityCategory !== 'SILVER_STANDARD') || scored.positiveSignals.length === 0) return [];
+    const freshnessStatus = window
+      ? classifyDate(`${page.publishedAt ?? ''} ${page.updatedAt ?? ''} ${page.content ?? ''}`, window).status
+      : page.freshnessStatus;
+    if (seen.has(key) || freshnessStatus !== 'in_window' || (page.qualityCategory !== 'GOLD_STANDARD' && page.qualityCategory !== 'SILVER_STANDARD') || scored.positiveSignals.length === 0) return [];
     seen.add(key);
     return [{ product_name: page.title ?? key, release_or_update_date: page.updatedAt ?? page.publishedAt, last_verified_at: page.lastVerifiedAt, access_or_application_url: key, hotspot_tier: scored.tier, freshness_status: page.freshnessStatus, evidence_basis: key }];
   });

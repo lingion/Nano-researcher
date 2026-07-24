@@ -401,7 +401,9 @@ export async function runLiveAudit(
       {
         maxIterations: runtime.maxIterations,
         targetHotspotCount: runtime.targetHotspotCount,
-        callModel: runtime.callModel,
+        fromDate: runtime.fromDate,
+        toDate: runtime.toDate,
+        enableBrowser: runtime.enableBrowser,
         onDebugEvent: writeDebugEventSafely,
       },
     );

@@ -19,6 +19,7 @@ import type { PolicyAgentDecision } from '../policy-task/output-schema.ts';
 import type { PolicyAgentState } from '../policy-task/state-schema.ts';
 import { createPersistentFetchTool } from '../workspace/persistent-fetch-tool.ts';
 import { deriveEarlyAccessItems } from '../artifacts/write-early-access-report.ts';
+import { classifyDate } from '../search-fusion/recency-window.ts';
 
 function createDefaultFetchTool(): FetchTool {
   return {
@@ -96,7 +97,9 @@ export async function runPolicyTaskLoop(
     onDebugEvent?: (event: DebugEvent) => void;
     targetValidatedEvidenceCount?: number;
     targetHotspotCount?: number;
-  } = {},
+    fromDate?: string;
+    toDate?: string;
+    enableBrowser?: boolean;  } = {},
 ): Promise<PolicyAgentState & {
   decision: PolicyAgentDecision;
   loop_interrupted_by_gate?: boolean;
@@ -106,6 +109,7 @@ export async function runPolicyTaskLoop(
   const maxIterations = options.maxIterations ?? 4;
   const targetValidatedEvidenceCount = options.targetValidatedEvidenceCount ?? Number.parseInt(process.env.POLICY_TARGET_VALIDATED_COUNT ?? '3', 10);
   const targetHotspotCount = options.targetHotspotCount ?? Number.parseInt(process.env.LIVE_AUDIT_TARGET_COUNT ?? '20', 10);
+  const dateWindow = options.fromDate && options.toDate ? { start: options.fromDate, end: options.toDate } : undefined;
   let state: PolicyAgentState = {
     task: input,
     discoveredCandidates: [],
@@ -118,7 +122,9 @@ export async function runPolicyTaskLoop(
   const ownedToolset = options.searchTool && options.fetchTool ? null : await createDefaultToolset();
   const searchTool = options.searchTool ?? ownedToolset?.searchTool ?? createDefaultSearchTool();
   const baseFetchTool = options.fetchTool ?? ownedToolset?.fetchTool ?? createDefaultFetchTool();
-  const fetchTool = createPersistentFetchTool(baseFetchTool, { taskTopic: input.topic });
+  const fetchTool = options.enableBrowser
+    ? { fetch: async (url: string) => fetchWithLocalPrimary(url, 20000, { enableBrowserFallback: true }) }
+    : createPersistentFetchTool(baseFetchTool, { taskTopic: input.topic });
 
   let lastDecision: PolicyAgentDecision | null = null;
   let currentTurnAnchorUrl: string | undefined;
@@ -165,7 +171,7 @@ export async function runPolicyTaskLoop(
       currentTurnAnchorUrl = result.decision.fetchActions.at(-1)?.url;
 
       if (['finalize', 'stop', 'summarize_and_stop'].includes(result.decision.decision)) {
-        const validCount = deriveEarlyAccessItems(fullAuditState.fetchedEvidence).length;
+        const validCount = deriveEarlyAccessItems(fullAuditState.fetchedEvidence, dateWindow).length;
         if (validCount < targetHotspotCount) {
           return {
             ...fullAuditState,
