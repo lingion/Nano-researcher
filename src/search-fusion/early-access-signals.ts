@@ -23,6 +23,7 @@ const NEGATIVE: Signal[] = [
 ];
 
 export function scoreEarlyAccessSignals(text: string): EarlyAccessResult {
+  const signals: string[] = [];
   const positiveSignals: string[] = [];
   let score = 0;
   for (const signal of POSITIVE) {
