@@ -81,6 +81,7 @@ export function parseLiveAuditBoolean(raw: string | undefined, fallback = false)
   throw new Error(`Invalid boolean value: ${raw}`);
 }
 
+export function parseLiveAuditMaxIterations(rawValue: string | undefined): number {
   const candidate = rawValue ?? '4';
   const parsed = Number(candidate);
 

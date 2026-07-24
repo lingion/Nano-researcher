@@ -1,5 +1,5 @@
 import type { FetchedPageRecord } from '../fetch-fusion/types.ts';
-import { scoreEarlyAccess } from '../search-fusion/early-access-signals.ts';
+import { scoreEarlyAccessSignals } from '../search-fusion/early-access-signals.ts';
 
 export interface EarlyAccessReportItem {
   product_name: string;
@@ -35,9 +35,9 @@ export function deriveEarlyAccessItems(pages: FetchedPageRecord[]): EarlyAccessR
   const seen = new Set<string>();
   return pages.flatMap((page) => {
     const key = page.finalUrl ?? page.requestedUrl;
-    const scored = scoreEarlyAccess(`${page.title ?? ''}\n${page.content ?? ''}`);
+    const scored = scoreEarlyAccessSignals(`${page.title ?? ''}\n${page.content ?? ''}`);
     if (seen.has(key) || page.freshnessStatus !== 'in_window' || (page.qualityCategory !== 'GOLD_STANDARD' && page.qualityCategory !== 'SILVER_STANDARD') || scored.positiveSignals.length === 0) return [];
     seen.add(key);
-    return [{ product_name: page.title ?? key, release_or_update_date: page.updatedAt ?? page.publishedAt, last_verified_at: page.lastVerifiedAt, access_or_application_url: key, hotspot_tier: scored.hotspotTier, freshness_status: page.freshnessStatus, evidence_basis: key }];
+    return [{ product_name: page.title ?? key, release_or_update_date: page.updatedAt ?? page.publishedAt, last_verified_at: page.lastVerifiedAt, access_or_application_url: key, hotspot_tier: scored.tier, freshness_status: page.freshnessStatus, evidence_basis: key }];
   });
 }
