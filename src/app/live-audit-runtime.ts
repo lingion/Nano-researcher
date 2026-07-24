@@ -18,7 +18,11 @@ export interface LiveAuditEnv {
   LIVE_AUDIT_TOPIC?: string;
   LIVE_AUDIT_MAX_ITERATIONS?: string;
   LIVE_AUDIT_OUTPUT_DIR?: string;
-}
+  LIVE_AUDIT_FROM?: string;
+  LIVE_AUDIT_TO?: string;
+  LIVE_AUDIT_TARGET_COUNT?: string;
+  LIVE_AUDIT_HOTSPOT_ONLY?: string;
+  LIVE_AUDIT_ENABLE_BROWSER?: string;}
 
 export interface LiveAuditTransportProvenance {
   transport: 'nanoclaw';
@@ -34,6 +38,11 @@ export interface LiveAuditRuntime {
   topic: string;
   maxIterations: number;
   outputDir: string;
+  fromDate: string;
+  toDate: string;
+  targetHotspotCount: number;
+  hotspotOnly: boolean;
+  enableBrowser: boolean;
   callModel: (prompt: string) => Promise<string>;
   resolvePreflightProvenance: () => Promise<LiveAuditTransportProvenance>;
   onDebugEvent: (event: DebugEvent) => void;
@@ -53,7 +62,25 @@ const LIVE_AUDIT_PROVENANCE_ENV_KEYS = [
   'ANTHROPIC_DEFAULT_OPUS_MODEL',
 ] as const;
 
-export function parseLiveAuditMaxIterations(rawValue: string | undefined): number {
+export function parseLiveAuditDate(raw: string | undefined, fallback: string): string {
+  const value = raw ?? fallback;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`))) throw new Error(`Live audit date must be ISO YYYY-MM-DD; received ${JSON.stringify(value)}`);
+  return value;
+}
+
+export function parseLiveAuditTargetCount(raw: string | undefined, fallback = 20): number {
+  const value = Number(raw ?? fallback);
+  if (!Number.isInteger(value) || value <= 0) throw new Error('LIVE_AUDIT_TARGET_COUNT must be a positive integer');
+  return value;
+}
+
+export function parseLiveAuditBoolean(raw: string | undefined, fallback = false): boolean {
+  if (raw === undefined) return fallback;
+  if (/^(1|true|yes|on)$/i.test(raw)) return true;
+  if (/^(0|false|no|off)$/i.test(raw)) return false;
+  throw new Error(`Invalid boolean value: ${raw}`);
+}
+
   const candidate = rawValue ?? '4';
   const parsed = Number(candidate);
 
@@ -176,8 +203,14 @@ export function createLiveAuditRuntime(
     onDebugEvent?: (event: DebugEvent) => void;
   } = {},
 ): LiveAuditRuntime {
-  const topic = env.LIVE_AUDIT_TOPIC ?? '2026年黑龙江省高新技术企业租金减免及研发投入补贴政策最新规定';
+  const topic = env.LIVE_AUDIT_TOPIC ?? '最新 AI 新品、模型发布、内测资格、Beta/Preview、Waitlist 和申请入口';
   const maxIterations = parseLiveAuditMaxIterations(env.LIVE_AUDIT_MAX_ITERATIONS);
+  const toDate = parseLiveAuditDate(env.LIVE_AUDIT_TO, new Date().toISOString().slice(0, 10));
+  const fromDate = parseLiveAuditDate(env.LIVE_AUDIT_FROM, toDate);
+  const targetHotspotCount = parseLiveAuditTargetCount(env.LIVE_AUDIT_TARGET_COUNT);
+  const hotspotOnly = parseLiveAuditBoolean(env.LIVE_AUDIT_HOTSPOT_ONLY, true);
+  const enableBrowser = parseLiveAuditBoolean(env.LIVE_AUDIT_ENABLE_BROWSER, false);
+  if (fromDate > toDate) throw new Error('LIVE_AUDIT_FROM must be on or before LIVE_AUDIT_TO');
   const outputDir = env.LIVE_AUDIT_OUTPUT_DIR ?? (deps.resolveDefaultOutputDir ?? resolveDefaultLiveAuditOutputDir)();
   const forwardShellDebugEvent = deps.onDebugEvent ?? (() => {});
   const resolveConfig = deps.resolveConfig ?? resolveNanoclawRuntimeConfig;
@@ -188,6 +221,11 @@ export function createLiveAuditRuntime(
     topic,
     maxIterations,
     outputDir,
+    fromDate,
+    toDate,
+    targetHotspotCount,
+    hotspotOnly,
+    enableBrowser,
     callModel: async (prompt: string) => {
       resolvedConfig ??= resolveConfig();
       return await (deps.callNanoclawModel ?? callNanoclawModel)(prompt, { config: resolvedConfig });
@@ -361,6 +399,7 @@ export async function runLiveAudit(
       { topic: runtime.topic },
       {
         maxIterations: runtime.maxIterations,
+        targetHotspotCount: runtime.targetHotspotCount,
         callModel: runtime.callModel,
         onDebugEvent: writeDebugEventSafely,
       },
