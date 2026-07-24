@@ -104,8 +104,16 @@ function writeLiveAuditDebugTrace(
     task,
     events,
   });
-  appendFileSync(liveLogPath, `${new Date().toISOString()} ${JSON.stringify(events.at(-1))}\n`);
+  const latest = events.at(-1);
+  if (latest) appendFileSync(liveLogPath, `${new Date().toISOString()} ${JSON.stringify(latest)}\n`, 'utf8');
   return debugTracePath;
+}
+
+function initializeLiveAuditLog(outputDir: string, topic: string): string {
+  mkdirSync(outputDir, { recursive: true });
+  const liveLogPath = path.join(outputDir, 'live.log');
+  appendFileSync(liveLogPath, `${new Date().toISOString()} ${JSON.stringify({ type: 'live_audit.start', payload: { topic } })}\n`, 'utf8');
+  return liveLogPath;
 }
 
 function reportShellDebugEvent(runtime: Pick<LiveAuditRuntime, 'onShellDebugEvent'>, event: DebugEvent): void {
@@ -368,7 +376,7 @@ export async function runLiveAudit(
   } = {},
 ): Promise<Awaited<ReturnType<typeof runPolicyTaskLoop>> & { debugTracePath: string }> {
   const debugEvents: DebugEvent[] = [];
-  let debugTracePath = path.join(runtime.outputDir, 'debug-trace.json');
+  initializeLiveAuditLog(runtime.outputDir, runtime.topic);  let debugTracePath = path.join(runtime.outputDir, 'debug-trace.json');
 
   const forwardDebugEvent = (event: DebugEvent) => {
     debugEvents.push(event);
