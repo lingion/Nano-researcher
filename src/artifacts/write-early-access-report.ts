@@ -1,4 +1,5 @@
 import type { FetchedPageRecord } from '../fetch-fusion/types.ts';
+import { classifyDate, type DateWindow } from '../search-fusion/recency-window.ts';
 import { scoreEarlyAccessSignals } from '../search-fusion/early-access-signals.ts';
 
 export interface EarlyAccessReportItem {
