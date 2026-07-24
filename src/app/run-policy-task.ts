@@ -164,7 +164,7 @@ export async function runPolicyTaskLoop(
       lastDecision = result.decision;
       currentTurnAnchorUrl = result.decision.fetchActions.at(-1)?.url;
 
-      if (result.decision.decision === 'summarize_and_stop') {
+      if (['finalize', 'stop', 'summarize_and_stop'].includes(result.decision.decision)) {
         const validCount = deriveEarlyAccessItems(fullAuditState.fetchedEvidence).length;
         if (validCount < targetHotspotCount) {
           return {

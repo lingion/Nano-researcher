@@ -4,6 +4,7 @@ export type EarlyAccessResult = {
   score: number;
   tier: EarlyAccessTier;
   signals: string[];
+  positiveSignals: string[];
 };
 
 type Signal = { label: string; pattern: RegExp; weight: number };
@@ -22,14 +23,21 @@ const NEGATIVE: Signal[] = [
 ];
 
 export function scoreEarlyAccessSignals(text: string): EarlyAccessResult {
-  const signals: string[] = [];
+  const positiveSignals: string[] = [];
   let score = 0;
-  for (const signal of [...POSITIVE, ...NEGATIVE]) {
+  for (const signal of POSITIVE) {
+    if (signal.pattern.test(text)) {
+      signals.push(signal.label);
+      positiveSignals.push(signal.label);
+      score += signal.weight;
+    }
+  }
+  for (const signal of NEGATIVE) {
     if (signal.pattern.test(text)) {
       signals.push(signal.label);
       score += signal.weight;
     }
   }
   const tier: EarlyAccessTier = score >= 5 ? 'A' : score >= 2 ? 'B' : 'C';
-  return { score, tier, signals };
+  return { score, tier, signals, positiveSignals };
 }
