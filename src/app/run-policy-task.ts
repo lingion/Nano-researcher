@@ -18,6 +18,7 @@ import type { DebugEvent } from '../runtime/ask-real-claude.ts';
 import type { PolicyAgentDecision } from '../policy-task/output-schema.ts';
 import type { PolicyAgentState } from '../policy-task/state-schema.ts';
 import { createPersistentFetchTool } from '../workspace/persistent-fetch-tool.ts';
+import { deriveEarlyAccessItems } from '../artifacts/write-early-access-report.ts';
 
 function createDefaultFetchTool(): FetchTool {
   return {
@@ -94,6 +95,7 @@ export async function runPolicyTaskLoop(
     fetchTool?: FetchTool;
     onDebugEvent?: (event: DebugEvent) => void;
     targetValidatedEvidenceCount?: number;
+    targetHotspotCount?: number;
   } = {},
 ): Promise<PolicyAgentState & {
   decision: PolicyAgentDecision;
@@ -103,6 +105,7 @@ export async function runPolicyTaskLoop(
 }> {
   const maxIterations = options.maxIterations ?? 4;
   const targetValidatedEvidenceCount = options.targetValidatedEvidenceCount ?? Number.parseInt(process.env.POLICY_TARGET_VALIDATED_COUNT ?? '3', 10);
+  const targetHotspotCount = options.targetHotspotCount ?? Number.parseInt(process.env.LIVE_AUDIT_TARGET_COUNT ?? '20', 10);
   let state: PolicyAgentState = {
     task: input,
     discoveredCandidates: [],
@@ -162,6 +165,18 @@ export async function runPolicyTaskLoop(
       currentTurnAnchorUrl = result.decision.fetchActions.at(-1)?.url;
 
       if (result.decision.decision === 'summarize_and_stop') {
+        const validCount = deriveEarlyAccessItems(fullAuditState.fetchedEvidence).length;
+        if (validCount < targetHotspotCount) {
+          return {
+            ...fullAuditState,
+            decision: result.decision,
+            final_quality_status: 'insufficient_target_count',
+            final_quality_reason: `Only ${validCount} dated early-access hotspots found; target is ${targetHotspotCount}.`,
+            target_count: targetHotspotCount,
+            valid_count: validCount,
+            shortfall: targetHotspotCount - validCount,
+          } as PolicyAgentState & { decision: PolicyAgentDecision; final_quality_status: string; final_quality_reason: string; target_count: number; valid_count: number; shortfall: number };
+        }
         return {
           ...fullAuditState,
           decision: result.decision,
