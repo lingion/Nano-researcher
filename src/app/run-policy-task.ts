@@ -123,7 +123,7 @@ export async function runPolicyTaskLoop(
   const searchTool = options.searchTool ?? ownedToolset?.searchTool ?? createDefaultSearchTool();
   const baseFetchTool = options.fetchTool ?? ownedToolset?.fetchTool ?? createDefaultFetchTool();
   const fetchTool = options.enableBrowser
-    ? { fetch: async (url: string) => fetchWithLocalPrimary(url, 20000, { enableBrowserFallback: true }) }
+    ? { fetch: async (url: string) => fetchWithLocalPrimary(url, 20000, { enableBrowserFallback: true, fetchImpl: async (targetUrl, init) => await fetch(targetUrl, init) }) }
     : createPersistentFetchTool(baseFetchTool, { taskTopic: input.topic });
 
   let lastDecision: PolicyAgentDecision | null = null;
