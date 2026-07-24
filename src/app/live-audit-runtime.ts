@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { mkdirSync, appendFileSync } from 'node:fs';
+import { mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
 
 import { runPolicyTaskLoop } from './run-policy-task.ts';
 import {
@@ -22,7 +22,10 @@ export interface LiveAuditEnv {
   LIVE_AUDIT_TO?: string;
   LIVE_AUDIT_TARGET_COUNT?: string;
   LIVE_AUDIT_HOTSPOT_ONLY?: string;
-  LIVE_AUDIT_ENABLE_BROWSER?: string;}
+  LIVE_AUDIT_ENABLE_BROWSER?: string;
+  LIVE_AUDIT_MODEL_TIMEOUT_MS?: string;
+  LIVE_AUDIT_HEARTBEAT_MS?: string;
+  LIVE_AUDIT_RUN_TIMEOUT_MS?: string;}
 
 export interface LiveAuditTransportProvenance {
   transport: 'nanoclaw';
@@ -239,7 +242,7 @@ export function createLiveAuditRuntime(
     enableBrowser,
     callModel: async (prompt: string) => {
       resolvedConfig ??= resolveConfig();
-      return await (deps.callNanoclawModel ?? callNanoclawModel)(prompt, { config: resolvedConfig });
+      return await (deps.callNanoclawModel ?? callNanoclawModel)(prompt, { config: resolvedConfig, onDebugEvent: forwardShellDebugEvent });
     },
     resolvePreflightProvenance: async () => {
       resolvedConfig ??= resolveConfig();
@@ -400,9 +403,31 @@ export async function runLiveAudit(
     }
   };
 
+  const runStartedAt = Date.now();
   try {
+    const instrumentedCallModel = async (prompt: string): Promise<string> => {
+      const startedAt = Date.now();
+      const stage = 'model';
+      const heartbeatMs = Number(runtime.onShellDebugEvent ? (process.env.LIVE_AUDIT_HEARTBEAT_MS ?? 30_000) : 0);
+      writeDebugEventSafely({ type: 'stage.start', payload: { stage, startedAt: new Date(startedAt).toISOString() } });
+      const heartbeat = Number.isFinite(heartbeatMs) && heartbeatMs > 0
+        ? setInterval(() => writeDebugEventSafely({ type: 'stage.heartbeat', payload: { stage, startedAt: new Date(startedAt).toISOString(), elapsedMs: Date.now() - startedAt } }), heartbeatMs)
+        : undefined;
+      try {
+        const result = await runtime.callModel(prompt);
+        writeDebugEventSafely({ type: 'stage.end', payload: { stage, startedAt: new Date(startedAt).toISOString(), completedAt: new Date().toISOString(), durationMs: Date.now() - startedAt } });
+        return result;
+      } catch (error) {
+        writeDebugEventSafely({ type: 'stage.failure', payload: { stage, startedAt: new Date(startedAt).toISOString(), completedAt: new Date().toISOString(), durationMs: Date.now() - startedAt, error: serializeErrorPayload(error) } });
+        throw error;
+      } finally {
+        if (heartbeat) clearInterval(heartbeat);
+      }
+    };
+
     await runLiveAuditPreflight({
       ...runtime,
+      callModel: instrumentedCallModel,
       onDebugEvent: writeDebugEventSafely,
     });
 
@@ -414,14 +439,25 @@ export async function runLiveAudit(
         fromDate: runtime.fromDate,
         toDate: runtime.toDate,
         enableBrowser: runtime.enableBrowser,
+        callModel: instrumentedCallModel,
         onDebugEvent: writeDebugEventSafely,
       },
     );
 
-    return {
-      ...result,
-      debugTracePath,
+    const completedAt = new Date().toISOString();
+    const summary = {
+      status: 'complete',
+      startedAt: new Date(runStartedAt).toISOString(),
+      completedAt,
+      durationMs: Date.now() - runStartedAt,
+      currentIteration: result.currentIteration,
+      decision: result.decision.decision,
+      discoveredCandidates: result.discoveredCandidates.length,
+      fetchedEvidence: result.fetchedEvidence.length,
     };
+    writeFileSync(path.join(runtime.outputDir, 'run-summary.json'), JSON.stringify(summary, null, 2));
+    writeDebugEventSafely({ type: 'run.complete', payload: summary });
+    return { ...result, debugTracePath };
   } catch (error) {
     emitFailureDebugEventSafely(
       {
@@ -431,7 +467,7 @@ export async function runLiveAudit(
       },
       {
         type: 'run.failure',
-        payload: serializeErrorPayload(error),
+        payload: { ...serializeErrorPayload(error), startedAt: new Date(runStartedAt).toISOString(), completedAt: new Date().toISOString(), durationMs: Date.now() - runStartedAt },
       },
       error,
     );

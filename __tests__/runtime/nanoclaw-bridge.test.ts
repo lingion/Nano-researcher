@@ -417,6 +417,33 @@ test('nanoclaw bridge retries transient upstream failures with the same centrali
 });
 
 
+test('nanoclaw bridge switches to configured fallback model after primary request timeout', async () => {
+  const models: string[] = [];
+  const rawText = await callNanoclawModel('prompt-body', {
+    config: {
+      apiKey: 'nano-key',
+      baseURL: 'https://nano.example/v1',
+      model: 'gpt-5.4',
+      fallbackModel: 'gpt-5.4-mini',
+      provider: 'openai',
+      requestTimeoutMs: 5,
+    },
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { model: string };
+      models.push(body.model);
+      if (body.model === 'gpt-5.4') {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'fallback-ok' } }] }));
+    },
+    jitterSource: () => 0,
+    sleepImpl: async () => {},
+  });
+
+  assert.equal(rawText, 'fallback-ok');
+  assert.deepEqual(models, ['gpt-5.4', 'gpt-5.4', 'gpt-5.4', 'gpt-5.4-mini']);
+});
+
 test('nanoclaw bridge logs raw SSE chunk forensics only when live audit debug is enabled', async (t) => {
   const originalDebug = process.env.LIVE_AUDIT_DEBUG;
   process.env.LIVE_AUDIT_DEBUG = '1';

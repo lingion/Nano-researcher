@@ -6,6 +6,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio';
 import type { FetchedPageRecord, KerryCleaningRecord } from '../fetch-fusion/types.js';
 import type { SearchDiscoveryRecord } from '../search-fusion/types.js';
 import type { FetchTool, SearchTool } from './tool-registry.js';
+import { withTimeout } from './reliability.ts';
 
 export interface SearchMcpToolOptions {
   command?: string;
@@ -16,6 +17,8 @@ export interface SearchMcpToolOptions {
   searchLimit?: number;
   fetchMaxChars?: number;
   engines?: string[];
+  requestTimeoutMs?: number;
+  closeTimeoutMs?: number;
 }
 
 const DEFAULT_SEARCH_LIMIT = 8;
@@ -73,7 +76,9 @@ function mapSearchResult(query: string, item: Record<string, unknown>): SearchDi
     quality_status: item.quality_status === 'green' || item.quality_status === 'yellow' ? item.quality_status : undefined,
     quality_reason: asString(item.quality_reason),
     filtered_count: typeof item.filtered_count === 'number' ? item.filtered_count : undefined,
-    policy_grade: typeof item.policy_grade === 'string' ? item.policy_grade as SearchDiscoveryRecord['policy_grade'] : undefined,
+    access_source_grade: typeof item.access_source_grade === 'string'
+      ? item.access_source_grade as SearchDiscoveryRecord['access_source_grade']
+      : undefined,
     kerry_quality_status: typeof item.quality_status === 'string'
       ? item.quality_status as SearchDiscoveryRecord['kerry_quality_status']
       : typeof item.quality_reason === 'string'
@@ -155,14 +160,14 @@ export async function createSearchMcpTools(options: SearchMcpToolOptions = {}): 
   return {
     searchTool: {
       search: async (query: string) => {
-        const result = await client.callTool({
+        const result = await withTimeout(client.callTool({
           name: 'search_auto',
           arguments: {
             query,
             limit: searchLimit,
             engines,
           },
-        });
+        }), options.requestTimeoutMs ?? Number(process.env.LIVE_AUDIT_SEARCH_TIMEOUT_MS ?? 45_000), `search:${query}`);
         const structured = getStructuredContent(result);
         const items = Array.isArray(structured.results) ? structured.results : [];
         return items
@@ -172,19 +177,19 @@ export async function createSearchMcpTools(options: SearchMcpToolOptions = {}): 
     },
     fetchTool: {
       fetch: async (url: string) => {
-        const result = await client.callTool({
+        const result = await withTimeout(client.callTool({
           name: 'fetch_url',
           arguments: {
             url,
             maxChars: fetchMaxChars,
           },
-        });
+        }), options.requestTimeoutMs ?? Number(process.env.LIVE_AUDIT_FETCH_TIMEOUT_MS ?? 45_000), `fetch:${url}`);
         const structured = getStructuredContent(result);
         return mapFetchResult(url, structured);
       },
     },
     close: async () => {
-      await transport.close();
+      await withTimeout(transport.close(), options.closeTimeoutMs ?? Number(process.env.LIVE_AUDIT_MCP_CLOSE_TIMEOUT_MS ?? 10_000), 'mcp:close');
     },
   };
 }

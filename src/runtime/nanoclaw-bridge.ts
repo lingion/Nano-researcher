@@ -1,8 +1,12 @@
+import { withTimeout, RuntimeTimeoutError, retryDelayMs, isRetryableRuntimeError } from './reliability.ts';
+
 export interface NanoclawRuntimeConfig {
   apiKey: string;
   baseURL: string;
   model: string;
   provider: 'openai' | 'anthropic';
+  fallbackModel?: string;
+  requestTimeoutMs?: number;
 }
 
 export interface GatewayModelProbeResult {
@@ -111,6 +115,12 @@ export function resolveNanoclawRuntimeConfig(): NanoclawRuntimeConfig {
     baseURL,
     model: resolveRuntimeModel(),
     provider,
+    ...(process.env.POLICY_AGENT_LLM_FALLBACK_MODEL || process.env.NANOCLAW_FALLBACK_MODEL
+      ? { fallbackModel: process.env.POLICY_AGENT_LLM_FALLBACK_MODEL ?? process.env.NANOCLAW_FALLBACK_MODEL }
+      : {}),
+    ...(process.env.LIVE_AUDIT_MODEL_TIMEOUT_MS
+      ? { requestTimeoutMs: Number(process.env.LIVE_AUDIT_MODEL_TIMEOUT_MS) }
+      : {}),
   };
 }
 
@@ -527,7 +537,7 @@ export async function probeNanoclawGatewayModels(
 }
 
 function isRetriableStatus(status: number): boolean {
-  return status === 502 || status === 503 || status === 504;
+  return status === 429 || status === 502 || status === 503 || status === 504;
 }
 
 function shouldRetryStructurallyValidEmptyResponse(diagnostics: EmptyResponseDiagnostics): boolean {
@@ -543,6 +553,7 @@ export async function callNanoclawModel(
     fetchImpl?: typeof fetch;
     jitterSource?: () => number;
     sleepImpl?: (delayMs: number) => Promise<void>;
+    onDebugEvent?: (event: { type: string; payload: Record<string, unknown> }) => void;
   } = {},
 ): Promise<string> {
   const config = options.config ?? resolveNanoclawRuntimeConfig();
@@ -551,6 +562,7 @@ export async function callNanoclawModel(
   const sleepImpl = options.sleepImpl ?? ((delayMs: number) => new Promise<void>((resolve) => {
     setTimeout(resolve, delayMs);
   }));
+  const onDebugEvent = options.onDebugEvent;
 
   const endpoint = config.provider === 'openai'
     ? `${normalizeGatewayRoot(config.baseURL).replace(/\/+$/, '')}/chat/completions`
@@ -572,78 +584,71 @@ export async function callNanoclawModel(
   let lastError: NanoclawEmptyResponseError | null = null;
   const maxAttempts = 3;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const response = await fetchImpl(endpoint, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${config.apiKey}`,
-        ...(config.provider === 'anthropic'
-          ? { 'anthropic-version': '2023-06-01' }
-          : {}),
-      },
-      body: JSON.stringify(body),
-    });
+  async function requestForModel(model: string): Promise<string> {
+    const requestConfig = { ...config, model };
+    const requestBody: Record<string, unknown> = config.provider === 'openai'
+      ? { model, stream: false, messages: [{ role: 'user', content: prompt }] }
+      : { model, max_tokens: 4000, messages: [{ role: 'user', content: prompt }] };
+    const requestMetricsForModel = buildRequestMetrics(requestConfig, requestBody);
 
-    const { payload, text: responseText } = await readResponsePayloadWithText(response);
-
-    if (!response.ok) {
-      const detail = extractErrorDetail(payload);
-      if (attempt < maxAttempts && isRetriableStatus(response.status)) {
-        const delay = (200 * (3 ** (attempt - 1))) + jitterSource();
-        await sleepImpl(delay);
-        continue;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const controller = new AbortController();
+        const response = await withTimeout(
+          fetchImpl(endpoint, {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+              'content-type': 'application/json',
+              authorization: `Bearer ${config.apiKey}`,
+              ...(config.provider === 'anthropic' ? { 'anthropic-version': '2023-06-01' } : {}),
+            },
+            body: JSON.stringify(requestBody),
+          }),
+          config.requestTimeoutMs ?? 120_000,
+          `model:${model}`,
+          () => controller.abort(),
+        );
+        const { payload, text: responseText } = await readResponsePayloadWithText(response);
+        if (!response.ok) {
+          const detail = extractErrorDetail(payload);
+          if (attempt < maxAttempts && isRetriableStatus(response.status)) {
+            await sleepImpl(retryDelayMs(attempt, jitterSource()));
+            continue;
+          }
+          throw new Error(`Nanoclaw request failed with ${response.status} ${response.statusText}: ${detail}`);
+        }
+        const rawText = config.provider === 'openai' ? extractOpenAIText(payload) : extractAnthropicText(payload);
+        if (rawText) return rawText;
+        const diagnostics = buildEmptyResponseDiagnostics(response, config.provider, payload, requestMetricsForModel, responseText);
+        const emptyResponseError = new NanoclawEmptyResponseError('Gateway returned verified empty response after retries', diagnostics);
+        if (attempt < maxAttempts && shouldRetryStructurallyValidEmptyResponse(diagnostics)) {
+          lastError = emptyResponseError;
+          await sleepImpl(retryDelayMs(attempt, jitterSource()));
+          continue;
+        }
+        throw emptyResponseError;
+      } catch (error) {
+        if (attempt < maxAttempts && (error instanceof RuntimeTimeoutError || isRetryableRuntimeError(error))) {
+          onDebugEvent?.({ type: 'fallback.retry.start', payload: { model, attempt, delayMs: retryDelayMs(attempt, jitterSource()), reason: error instanceof Error ? error.message : String(error) } });
+          await sleepImpl(retryDelayMs(attempt, jitterSource()));
+          continue;
+        }
+        throw error;
       }
-      throw new Error(`Nanoclaw request failed with ${response.status} ${response.statusText}: ${detail}`);
     }
-
-    const rawText = config.provider === 'openai'
-      ? extractOpenAIText(payload)
-      : extractAnthropicText(payload);
-
-    if (rawText) {
-      return rawText;
-    }
-
-    const diagnostics = buildEmptyResponseDiagnostics(response, config.provider, payload, requestMetrics, responseText);
-    const emptyResponseError = new NanoclawEmptyResponseError(
-      'Gateway returned verified empty response after retries',
-      diagnostics,
-    );
-
-    if (attempt < maxAttempts && shouldRetryStructurallyValidEmptyResponse(diagnostics)) {
-      lastError = emptyResponseError;
-      const delay = (200 * (3 ** (attempt - 1))) + jitterSource();
-      await sleepImpl(delay);
-      continue;
-    }
-
-    throw emptyResponseError;
+    throw lastError ?? new Error(`Model ${model} exhausted retry budget`);
   }
 
-  throw lastError ?? new NanoclawEmptyResponseError('Gateway returned verified empty response after retries', {
-    traceId: 'no-trace-id',
-    shapeType: 'UNKNOWN_SHAPE',
-    finishReason: 'missing',
-    refusal: 'none',
-    streamModeDetected: false,
-    requestMetrics,
-    responseMetrics: {
-      status: 200,
-      bodyBytes: 0,
-      topLevelKeys: [],
-    },
-    responseFeatures: {
-      hasChoicesArray: false,
-      hasTextContent: false,
-      messageFieldPresent: false,
-      deltaFieldPresent: false,
-      contentFieldPresent: false,
-      contentFieldType: 'undefined',
-      toolCallsPresent: false,
-      refusalFieldPresent: false,
-      choiceTopLevelKeys: [],
-      rawTopLevelKeys: [],
-    },
-  });
+  try {
+    return await requestForModel(config.model);
+  } catch (primaryError) {
+    if (!config.fallbackModel || config.fallbackModel === config.model) throw primaryError;
+    onDebugEvent?.({ type: 'fallback.switch', payload: { fromModel: config.model, toModel: config.fallbackModel, reason: primaryError instanceof Error ? primaryError.message : String(primaryError) } });
+    return await requestForModel(config.fallbackModel);
+  }
+
+  /* istanbul ignore next */
+  throw lastError ?? new Error('unreachable');
+
 }

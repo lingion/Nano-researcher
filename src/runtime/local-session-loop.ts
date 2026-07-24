@@ -105,7 +105,10 @@ export async function runOneSessionIteration(
     });
 
     try {
+      const startedAt = Date.now();
+      deps.onDebugEvent?.({ type: 'stage.start', payload: { stage: 'search', query: action.query, iteration: state.currentIteration, startedAt: new Date(startedAt).toISOString() } });
       const found = await deps.searchTool.search(action.query);
+      deps.onDebugEvent?.({ type: 'stage.end', payload: { stage: 'search', query: action.query, iteration: state.currentIteration, startedAt: new Date(startedAt).toISOString(), durationMs: Date.now() - startedAt } });
       deps.onDebugEvent?.({
         type: 'tool.search.result',
         payload: {
@@ -117,6 +120,15 @@ export async function runOneSessionIteration(
 
       discovered.push(...found);
     } catch (error) {
+      deps.onDebugEvent?.({
+        type: 'stage.failure',
+        payload: {
+          stage: 'search',
+          query: action.query,
+          iteration: state.currentIteration,
+          error: serializeError(error),
+        },
+      });
       deps.onDebugEvent?.({
         type: 'tool.search.failure',
         payload: {
@@ -164,7 +176,10 @@ export async function runOneSessionIteration(
     });
 
     try {
+      const startedAt = Date.now();
+      deps.onDebugEvent?.({ type: 'stage.start', payload: { stage: 'fetch', url: action.url, iteration: state.currentIteration, startedAt: new Date(startedAt).toISOString() } });
       const page = await deps.fetchTool.fetch(action.url);
+      deps.onDebugEvent?.({ type: 'stage.end', payload: { stage: 'fetch', url: action.url, iteration: state.currentIteration, startedAt: new Date(startedAt).toISOString(), durationMs: Date.now() - startedAt } });
       deps.onDebugEvent?.({
         type: 'tool.fetch.result',
         payload: {
@@ -175,6 +190,15 @@ export async function runOneSessionIteration(
 
       fetched.push(page);
     } catch (error) {
+      deps.onDebugEvent?.({
+        type: 'stage.failure',
+        payload: {
+          stage: 'fetch',
+          url: action.url,
+          iteration: state.currentIteration,
+          error: serializeError(error),
+        },
+      });
       deps.onDebugEvent?.({
         type: 'tool.fetch.failure',
         payload: {
