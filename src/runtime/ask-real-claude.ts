@@ -35,6 +35,11 @@ function isFetchActionToken(value: unknown): boolean {
   return FETCH_ACTION_ALIASES.has(normalizeToken(value));
 }
 
+function extractFinalPackage(payload: Record<string, unknown>): unknown {
+  if (payload.finalPackage && typeof payload.finalPackage === 'object') return payload.finalPackage;
+  if (payload.final_package && typeof payload.final_package === 'object') return payload.final_package;
+  return payload;
+}
 function pickNonEmptyString(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value === 'string' && value.trim() !== '') {
@@ -276,7 +281,7 @@ function normalizeCompositeDecision(
       reasoning: simpleJudgment ?? 'No reasoning returned.',
       searchActions: [],
       fetchActions: [],
-      finalPackage: payload,
+      finalPackage: extractFinalPackage(payload),
       uncertainties: Array.isArray(payload.uncertainties) ? payload.uncertainties : [],
       discardedLeads: Array.isArray(payload.discardedLeads) ? payload.discardedLeads : [],
       evidenceAssessments: Array.isArray(payload.evidenceAssessments) ? payload.evidenceAssessments as PolicyAgentDecision['evidenceAssessments'] : [],
@@ -289,7 +294,7 @@ function normalizeCompositeDecision(
     searchActions,
     fetchActions,
     evidenceAssessments: Array.isArray(payload.evidenceAssessments) ? payload.evidenceAssessments as PolicyAgentDecision['evidenceAssessments'] : [],
-    finalPackage: payload,
+    finalPackage: extractFinalPackage(payload),
     uncertainties: Array.isArray(payload.uncertainties) ? payload.uncertainties : [],
     discardedLeads: Array.isArray(payload.discardedLeads) ? payload.discardedLeads : [],
   };
@@ -374,7 +379,7 @@ function legacyNormalizeDecision(
             },
           ],
       fetchActions: [],
-      finalPackage: payload,
+      finalPackage: extractFinalPackage(payload),
       uncertainties: Array.isArray(payload.uncertainties) ? payload.uncertainties : [],
       discardedLeads: [],
     };
@@ -393,7 +398,7 @@ function legacyNormalizeDecision(
           ]
         : [],
       fetchActions: [],
-      finalPackage: payload,
+      finalPackage: extractFinalPackage(payload),
       uncertainties: /证据不足/i.test(simpleJudgment) ? [simpleJudgment] : [],
       discardedLeads: [],
     };
@@ -418,7 +423,7 @@ function legacyNormalizeDecision(
     searchActions: Array.isArray(payload.searchActions) ? payload.searchActions : [],
     fetchActions: explicitFetchActions,
     evidenceAssessments: Array.isArray(payload.evidenceAssessments) ? payload.evidenceAssessments as PolicyAgentDecision['evidenceAssessments'] : [],
-    finalPackage: payload.finalPackage ?? payload,
+    finalPackage: extractFinalPackage(payload),
     uncertainties: Array.isArray(payload.uncertainties) ? payload.uncertainties : [],
     discardedLeads: Array.isArray(payload.discardedLeads) ? payload.discardedLeads : [],
   };
@@ -433,7 +438,7 @@ function normalizeDecision(payload: Partial<PolicyAgentDecision> & Record<string
       searchActions: [],
       fetchActions: [],
       evidenceAssessments: Array.isArray(payload.evidenceAssessments) ? payload.evidenceAssessments as PolicyAgentDecision['evidenceAssessments'] : [],
-      finalPackage: payload.finalPackage ?? payload,
+      finalPackage: extractFinalPackage(payload),
       uncertainties: Array.isArray(payload.uncertainties) ? payload.uncertainties : [],
       discardedLeads: Array.isArray(payload.discardedLeads) ? payload.discardedLeads : [],
     };
