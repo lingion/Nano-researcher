@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, appendFileSync } from 'node:fs';
 
 import { runPolicyTaskLoop } from './run-policy-task.ts';
 import {
@@ -99,10 +99,12 @@ function writeLiveAuditDebugTrace(
 ): string {
   mkdirSync(outputDir, { recursive: true });
   const debugTracePath = path.join(outputDir, 'debug-trace.json');
+  const liveLogPath = path.join(outputDir, 'live.log');
   writeRunTranscript.sync(debugTracePath, {
     task,
     events,
   });
+  appendFileSync(liveLogPath, `${new Date().toISOString()} ${JSON.stringify(events.at(-1))}\n`);
   return debugTracePath;
 }
 
