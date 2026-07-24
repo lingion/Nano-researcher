@@ -1,6 +1,7 @@
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 
+import { fetchWithBrowserFallback, type BrowserAdapter } from './browser-fetch.js';
 import type { FetchEvidenceClues, FetchedPageRecord } from './types.js';
 
 export function normalizeFetchedPage(input: FetchedPageRecord): FetchedPageRecord {
@@ -119,6 +120,9 @@ export async function fetchWithLocalPrimary(
   maxChars = 20000,
   options: {
     fetchImpl?: (url: string, init?: { headers?: Record<string, string> }) => Promise<{ text: () => Promise<string>; url?: string }>;
+    enableBrowserFallback?: boolean;
+    browserAdapter?: BrowserAdapter;
+    browserTimeoutMs?: number;
   } = {},
 ): Promise<FetchedPageRecord> {
   const webFetch = (globalThis as {
@@ -204,7 +208,7 @@ export async function fetchWithLocalPrimary(
     }
   })();
 
-  return normalizeFetchedPage({
+  const record = normalizeFetchedPage({
     requestedUrl: url,
     finalUrl,
     title,
@@ -217,5 +221,16 @@ export async function fetchWithLocalPrimary(
       content,
       html: fallbackText,
     }),
+  });
+
+  if (!options.enableBrowserFallback) {
+    return record;
+  }
+
+  return await fetchWithBrowserFallback(url, {
+    staticFetch: async () => ({ title: record.title, content: record.content, finalUrl: record.finalUrl }),
+    browser: options.browserAdapter,
+    timeoutMs: options.browserTimeoutMs,
+    now: new Date().toISOString(),
   });
 }
