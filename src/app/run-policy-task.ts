@@ -104,6 +104,8 @@ export async function runPolicyTaskLoop(
         transcriptPath: result.transcriptPath,
         currentIteration: result.currentIteration,
         uncertainties: result.uncertainties,
+        transportFacts: result.transportFacts,
+        protocolErrors: result.protocolErrors,
       };
       state = fullAuditState;
       lastDecision = result.decision;

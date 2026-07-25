@@ -3,6 +3,12 @@ import type { PolicyAgentDecision } from '../policy-task/output-schema.js';
 import type { SearchTool, FetchTool } from './tool-registry.js';
 import type { DebugEvent } from './ask-real-claude.js';
 
+function serializeError(error: unknown): Record<string, unknown> {
+  return error instanceof Error
+    ? { name: error.name, message: error.message, stack: error.stack ?? null }
+    : { message: String(error) };
+}
+
 export async function runOneSessionIteration(
   state: PolicyAgentState,
   deps: {
@@ -156,6 +162,7 @@ export async function runOneSessionIteration(
     currentIteration: state.currentIteration + 1,
     uncertainties: decision.uncertainties,
     transportFacts,
+    protocolErrors: decision.protocolErrors ?? state.protocolErrors,
   };
 
   deps.onDebugEvent?.({

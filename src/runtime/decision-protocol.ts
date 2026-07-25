@@ -116,5 +116,8 @@ export function parseDecisionEnvelope(raw: string): DecisionParseResult {
     discardedLeads: Array.isArray(parsed.discardedLeads) ? parsed.discardedLeads.filter((item): item is string => typeof item === 'string') : [],
   };
 
-  return actionErrors.length > 0 ? { ok: true, decision: result, envelope: parsed, actionErrors } : { ok: true, decision: result, envelope: parsed };
+  const decision = result;
+  if (actionErrors.length > 0) decision.protocolErrors = actionErrors as unknown as Array<Record<string, unknown>>;
+
+  return actionErrors.length > 0 ? { ok: true, decision, envelope: parsed, actionErrors } : { ok: true, decision, envelope: parsed };
 }
