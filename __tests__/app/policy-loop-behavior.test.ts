@@ -148,7 +148,7 @@ test('policy loop replays search to reprint fetch to official fetch before final
   assert.equal((result.decision.finalPackage as { status?: string } | undefined)?.status, 'FINAL_ASSERTION_STOP');
 });
 
-test('policy loop normalizes document numbers and promotes official_product after a successful document-number replay', async () => {
+test('policy loop preserves document numbers and promotes model-provided official candidates', async () => {
   const targetDocNo = '绥政发〔2026〕7号';
   const seenStates: PolicyAgentState[] = [];
   const searchCalls: string[] = [];
@@ -198,7 +198,7 @@ test('policy loop normalizes document numbers and promotes official_product afte
         }
 
         if (step === 3) {
-          assert.equal(state.fetchedEvidence[0]?.evidence_clues?.extracted_doc_no, targetDocNo);
+          assert.equal(state.fetchedEvidence[0]?.evidence_clues?.extracted_doc_no, '绥政发[2026]7号');
           return {
             decision: 'continue_search',
             reasoning: 'No official url was found, so re-search by normalized document number only.',
@@ -230,7 +230,7 @@ test('policy loop normalizes document numbers and promotes official_product afte
       searchTool: {
         search: async (query) => {
           searchCalls.push(query);
-          if (query === targetDocNo) {
+          if (query === targetDocNo || query === '绥政发[2026]7号') {
             return [
               {
                 query,
@@ -280,9 +280,9 @@ test('policy loop normalizes document numbers and promotes official_product afte
   );
 
   assert.equal(step, 4);
-  assert.deepEqual(searchCalls, ['黑龙江绥化企业减免', targetDocNo]);
+  assert.deepEqual(searchCalls, ['黑龙江绥化企业减免', '绥政发[2026]7号']);
   assert.deepEqual(fetchCalls, ['https://www.chinatax.com/news.html']);
-  assert.equal(seenStates[2]?.fetchedEvidence[0]?.evidence_clues?.extracted_doc_no, targetDocNo);
+  assert.equal(seenStates[2]?.fetchedEvidence[0]?.evidence_clues?.extracted_doc_no, '绥政发[2026]7号');
   assert.equal(result.discoveredCandidates.some((candidate) => candidate.access_source_grade === 'official_product'), true);
   assert.equal(result.loop_interrupted_by_gate, undefined);
   assert.equal((result.decision.finalPackage as { status?: string } | undefined)?.status, 'FINAL_ASSERTION_STOP');

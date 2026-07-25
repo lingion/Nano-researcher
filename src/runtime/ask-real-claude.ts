@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 
 import { buildPolicyPrompt } from '../policy-task/prompt-builder.js';
 import type { PolicyAgentState } from '../policy-task/state-schema.js';
-import type { AgentFetchAction, PolicyAgentDecision } from '../policy-task/output-schema.js';
+import { parseDecisionEnvelope } from './decision-protocol.js';
 
 export interface DebugEvent {
   type: string;
@@ -566,31 +566,17 @@ export async function askRealClaudeDecision(
       },
     });
 
-    const parsed = JSON.parse(rawText) as Partial<PolicyAgentDecision>;
-    const decision = normalizeDecision(parsed);
-    decision.finalPackage = {
-      ...(decision.finalPackage && typeof decision.finalPackage === 'object'
-        ? (decision.finalPackage as Record<string, unknown>)
-        : {}),
-      _raw_model_output: rawText,
-    };
-
-    console.log('[FORENSIC] normalized decision output', JSON.stringify({
-      rawStatus: typeof parsed.status === 'string' ? parsed.status : null,
-      normalizedDecision: decision.decision,
-      searchActionCount: decision.searchActions.length,
-      fetchActionCount: decision.fetchActions.length,
-      searchQueries: decision.searchActions.map((action) => action.query),
-      reasoning: decision.reasoning,
-    }));
-
+    const parsed = parseDecisionEnvelope(rawText);
+    if (!parsed.ok) {
+      const error = new Error(parsed.error.message);
+      options.onDebugEvent?.({ type: 'model.protocol_error', payload: { error: parsed.error } });
+      throw error;
+    }
+    const decision = parsed.decision;
     options.onDebugEvent?.({
       type: 'model.parsed_decision',
-      payload: {
-        decision,
-      },
+      payload: { decision, actionErrors: parsed.actionErrors ?? [] },
     });
-
     return decision;
   } catch (error) {
     const errorRecord = serializeError(error);

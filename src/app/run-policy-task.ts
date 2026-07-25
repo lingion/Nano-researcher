@@ -7,7 +7,6 @@ import { writeRunTranscript } from '../artifacts/write-run-transcript.ts';
 import { writeReportHtml } from '../artifacts/write-report-html.ts';
 import { fetchWithLocalPrimary } from '../fetch-fusion/local-fetch-primary.ts';
 import {
-  normalizeFetchedEvidenceState,
   pruneDiscoveryContext,
 } from '../runtime/context-governor.ts';
 import { runLocalPolicyAgentIteration } from '../runtime/run-local-policy-agent.ts';
@@ -80,12 +79,11 @@ export async function runPolicyTaskLoop(
 
   try {
     for (let index = 0; index < maxIterations; index += 1) {
-      const iterationInputState = pruneDiscoveryContext(normalizeFetchedEvidenceState(state), currentTurnAnchorUrl);
+      const iterationInputState = pruneDiscoveryContext(state, currentTurnAnchorUrl);
       const result = await runLocalPolicyAgentIteration(iterationInputState, {
         askAgent: options.askAgent
           ? async (currentState) => {
-              const normalizedState = normalizeFetchedEvidenceState(currentState);
-              const prunedState = pruneDiscoveryContext(normalizedState, currentTurnAnchorUrl);
+              const prunedState = pruneDiscoveryContext(currentState, currentTurnAnchorUrl);
 
               return await options.askAgent?.(prunedState);
             }
@@ -99,15 +97,14 @@ export async function runPolicyTaskLoop(
       const discoveredDelta = result.discoveredCandidates.slice(iterationInputState.discoveredCandidates.length);
       const fetchedDelta = result.fetchedEvidence.slice(iterationInputState.fetchedEvidence.length);
 
-      fullAuditState = normalizeFetchedEvidenceState({
+      fullAuditState = {
         task: result.task,
         discoveredCandidates: [...fullAuditState.discoveredCandidates, ...discoveredDelta],
         fetchedEvidence: result.fetchedEvidence,
         transcriptPath: result.transcriptPath,
         currentIteration: result.currentIteration,
         uncertainties: result.uncertainties,
-        convergencePhase: result.convergencePhase,
-          });
+      };
       state = fullAuditState;
       lastDecision = result.decision;
       currentTurnAnchorUrl = result.decision.fetchActions.at(-1)?.url;

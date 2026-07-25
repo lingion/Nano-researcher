@@ -8,30 +8,11 @@ export interface GovernorConfig {
 export function normalizeDiscoveryCandidates(
   candidates: PolicyAgentState['discoveredCandidates'],
 ): PolicyAgentState['discoveredCandidates'] {
-  return candidates.map((candidate) => ({
-    ...candidate,
-    evidence_clues: candidate.evidence_clues
-      ? {
-          ...candidate.evidence_clues,
-          extracted_doc_no: normalizeDocumentNumber(candidate.evidence_clues.extracted_doc_no),
-        }
-      : candidate.evidence_clues,
-  }));
+  return candidates;
 }
 
 export function normalizeFetchedEvidenceState(state: PolicyAgentState): PolicyAgentState {
-  return {
-    ...state,
-    fetchedEvidence: state.fetchedEvidence.map((page) => ({
-      ...page,
-      evidence_clues: page.evidence_clues
-        ? {
-            ...page.evidence_clues,
-            extracted_doc_no: normalizeDocumentNumber(page.evidence_clues.extracted_doc_no),
-          }
-        : page.evidence_clues,
-    })),
-  };
+  return state;
 }
 
 export function candidateEvidenceScore(_candidate: PolicyAgentState['discoveredCandidates'][number]): number {
