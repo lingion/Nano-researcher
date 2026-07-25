@@ -10,7 +10,6 @@ import {
   normalizeFetchedEvidenceState,
   pruneDiscoveryContext,
 } from '../runtime/context-governor.ts';
-import { assessLoopTermination } from '../runtime/termination-policy.ts';
 import { runLocalPolicyAgentIteration } from '../runtime/run-local-policy-agent.ts';
 import { createSearchMcpTools } from '../runtime/search-mcp-tool-adapter.ts';
 import type { SearchTool, FetchTool } from '../runtime/tool-registry.ts';
@@ -18,7 +17,6 @@ import type { DebugEvent } from '../runtime/ask-real-claude.ts';
 import type { PolicyAgentDecision } from '../policy-task/output-schema.ts';
 import type { PolicyAgentState } from '../policy-task/state-schema.ts';
 import { createPersistentFetchTool } from '../workspace/persistent-fetch-tool.ts';
-import { deriveEarlyAccessItems } from '../artifacts/write-early-access-report.ts';
 import { classifyDate } from '../search-fusion/recency-window.ts';
 
 function createDefaultFetchTool(): FetchTool {
@@ -33,50 +31,6 @@ async function createDefaultToolset(): Promise<{
   close?: () => Promise<void>;
 }> {
   return await createSearchMcpTools();
-}
-
-function countValidatedEvidence(state: PolicyAgentState): number {
-  return state.fetchedEvidence.filter((page) => page.qualityCategory === 'GOLD_STANDARD' || page.qualityCategory === 'SILVER_STANDARD').length;
-}
-
-function withTargetValidatedEvidenceCount(state: PolicyAgentState, targetValidatedEvidenceCount: number): PolicyAgentState {
-  return {
-    ...state,
-    targetValidatedEvidenceCount,
-  };
-}
-
-function withConvergencePhase(state: PolicyAgentState, targetValidatedEvidenceCount: number): PolicyAgentState {
-  const validated = countValidatedEvidence(state);
-  if (validated < targetValidatedEvidenceCount) {
-    return {
-      ...state,
-      convergencePhase: undefined,
-      targetValidatedEvidenceCount,
-    };
-  }
-
-  if (state.convergencePhase === 'post_convergence_review') {
-    return {
-      ...state,
-      convergencePhase: 'final_summary',
-      targetValidatedEvidenceCount,
-    };
-  }
-
-  if (state.convergencePhase === 'final_summary') {
-    return {
-      ...state,
-      convergencePhase: 'final_summary',
-      targetValidatedEvidenceCount,
-    };
-  }
-
-  return {
-    ...state,
-    convergencePhase: 'post_convergence_review',
-    targetValidatedEvidenceCount,
-  };
 }
 
 async function writeDebugTraceArtifact(filePath: string, task: { topic: string }, events: DebugEvent[]): Promise<void> {
@@ -95,8 +49,6 @@ export async function runPolicyTaskLoop(
     searchTool?: SearchTool;
     fetchTool?: FetchTool;
     onDebugEvent?: (event: DebugEvent) => void;
-    targetValidatedEvidenceCount?: number;
-    targetHotspotCount?: number;
     fromDate?: string;
     toDate?: string;
     enableBrowser?: boolean;  } = {},
@@ -107,8 +59,6 @@ export async function runPolicyTaskLoop(
   final_quality_reason?: string;
 }> {
   const maxIterations = options.maxIterations ?? 4;
-  const targetValidatedEvidenceCount = options.targetValidatedEvidenceCount ?? Number.parseInt(process.env.POLICY_TARGET_VALIDATED_COUNT ?? '3', 10);
-  const targetHotspotCount = options.targetHotspotCount ?? Number.parseInt(process.env.LIVE_AUDIT_TARGET_COUNT ?? '20', 10);
   const dateWindow = options.fromDate && options.toDate ? { start: options.fromDate, end: options.toDate } : undefined;
   let state: PolicyAgentState = {
     task: input,
@@ -116,7 +66,6 @@ export async function runPolicyTaskLoop(
     fetchedEvidence: [],
     currentIteration: 0,
     uncertainties: [],
-    targetValidatedEvidenceCount,
   };
   let fullAuditState: PolicyAgentState = state;
   const ownedToolset = options.searchTool && options.fetchTool ? null : await createDefaultToolset();
@@ -131,18 +80,12 @@ export async function runPolicyTaskLoop(
 
   try {
     for (let index = 0; index < maxIterations; index += 1) {
-      const iterationInputState = withTargetValidatedEvidenceCount(
-        pruneDiscoveryContext(normalizeFetchedEvidenceState(state), currentTurnAnchorUrl),
-        targetValidatedEvidenceCount,
-      );
+      const iterationInputState = pruneDiscoveryContext(normalizeFetchedEvidenceState(state), currentTurnAnchorUrl);
       const result = await runLocalPolicyAgentIteration(iterationInputState, {
         askAgent: options.askAgent
           ? async (currentState) => {
               const normalizedState = normalizeFetchedEvidenceState(currentState);
-              const prunedState = withTargetValidatedEvidenceCount(
-                pruneDiscoveryContext(normalizedState, currentTurnAnchorUrl),
-                targetValidatedEvidenceCount,
-              );
+              const prunedState = pruneDiscoveryContext(normalizedState, currentTurnAnchorUrl);
 
               return await options.askAgent?.(prunedState);
             }
@@ -164,98 +107,24 @@ export async function runPolicyTaskLoop(
         currentIteration: result.currentIteration,
         uncertainties: result.uncertainties,
         convergencePhase: result.convergencePhase,
-        targetValidatedEvidenceCount,
-      });
-      state = withConvergencePhase(withTargetValidatedEvidenceCount(fullAuditState, targetValidatedEvidenceCount), targetValidatedEvidenceCount);
+          });
+      state = fullAuditState;
       lastDecision = result.decision;
       currentTurnAnchorUrl = result.decision.fetchActions.at(-1)?.url;
 
       if (['finalize', 'stop', 'summarize_and_stop'].includes(result.decision.decision)) {
-        const validCount = deriveEarlyAccessItems(fullAuditState.fetchedEvidence, dateWindow).length;
-        if (validCount < targetHotspotCount) {
-          return {
-            ...fullAuditState,
-            decision: result.decision,
-            final_quality_status: 'insufficient_target_count',
-            final_quality_reason: `Only ${validCount} dated early-access hotspots found; target is ${targetHotspotCount}.`,
-            target_count: targetHotspotCount,
-            valid_count: validCount,
-            shortfall: targetHotspotCount - validCount,
-          } as PolicyAgentState & { decision: PolicyAgentDecision; final_quality_status: string; final_quality_reason: string; target_count: number; valid_count: number; shortfall: number };
-        }
-        return {
-          ...fullAuditState,
-          decision: result.decision,
-        };
+        return { ...fullAuditState, decision: result.decision };
       }
 
-      const termination = assessLoopTermination({
-        currentIteration: result.currentIteration,
-        maxIterations,
-        lastCandidateQualityState: [...fullAuditState.discoveredCandidates]
-          .reverse()
-          .find((candidate) => candidate.kerry_quality_status)
-          ? {
-              status: [...fullAuditState.discoveredCandidates]
-                .reverse()
-                .find((candidate) => candidate.kerry_quality_status)?.kerry_quality_status,
-              reason: [...fullAuditState.discoveredCandidates]
-                .reverse()
-                .find((candidate) => candidate.kerry_quality_status)?.kerry_quality_reason,
-            }
-          : undefined,
-        agentDecisionType: result.decision.decision,
-        convergencePhase: result.convergencePhase,
-      });
-
-      if (termination.shouldBreak) {
-        return {
-          ...fullAuditState,
-          decision: result.decision,
-          ...(termination.interruptedByGate
-            ? {
-                loop_interrupted_by_gate: true,
-                final_quality_status: termination.finalQualityStatus,
-                final_quality_reason: termination.finalQualityReason,
-              }
-            : {}),
-        };
-      }
     }
 
     if (!lastDecision) {
       throw new Error('Policy task loop ended before any decision was produced.');
     }
 
-    const termination = assessLoopTermination({
-      currentIteration: fullAuditState.currentIteration,
-      maxIterations,
-      lastCandidateQualityState: [...fullAuditState.discoveredCandidates]
-        .reverse()
-        .find((candidate) => candidate.kerry_quality_status)
-        ? {
-            status: [...fullAuditState.discoveredCandidates]
-              .reverse()
-              .find((candidate) => candidate.kerry_quality_status)?.kerry_quality_status,
-            reason: [...fullAuditState.discoveredCandidates]
-              .reverse()
-              .find((candidate) => candidate.kerry_quality_status)?.kerry_quality_reason,
-          }
-        : undefined,
-      agentDecisionType: lastDecision.decision,
-      convergencePhase: fullAuditState.convergencePhase,
-    });
-
     return {
       ...fullAuditState,
       decision: lastDecision,
-      ...(termination.interruptedByGate
-        ? {
-            loop_interrupted_by_gate: true,
-            final_quality_status: termination.finalQualityStatus,
-            final_quality_reason: termination.finalQualityReason,
-          }
-        : {}),
     };
   } finally {
     if (ownedToolset?.close) {

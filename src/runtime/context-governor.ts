@@ -34,22 +34,8 @@ export function normalizeFetchedEvidenceState(state: PolicyAgentState): PolicyAg
   };
 }
 
-export function candidateEvidenceScore(candidate: PolicyAgentState['discoveredCandidates'][number]): number {
-  if (candidate.policy_grade === 'official_text') {
-    return 1000;
-  }
-  if (candidate.policy_grade === 'official_interpretation') {
-    return 900;
-  }
-  if (candidate.evidence_clues?.extracted_doc_no) {
-    return 800;
-  }
-  if (candidate.policy_grade === 'portal_homepage') {
-    return 200;
-  }
-  if (candidate.policy_grade === 'news_reprint') {
-    return 100;
-  }
+export function candidateEvidenceScore(_candidate: PolicyAgentState['discoveredCandidates'][number]): number {
+  // Business relevance is model-owned; runtime does not score candidates.
   return 0;
 }
 

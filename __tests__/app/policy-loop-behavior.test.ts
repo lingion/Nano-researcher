@@ -44,7 +44,7 @@ test('policy loop replays search to reprint fetch to official fetch before final
       fetchActions: [
         {
           url: 'https://www.suihua.gov.cn/zw/txt.html',
-          why: 'Lock the official_text source',
+          why: 'Lock the official_product source',
         },
       ],
       uncertainties: [],
@@ -52,7 +52,7 @@ test('policy loop replays search to reprint fetch to official fetch before final
     },
     {
       decision: 'finalize',
-      reasoning: 'Confident validation complete after securing official_text.',
+      reasoning: 'Confident validation complete after securing official_product.',
       searchActions: [],
       fetchActions: [],
       uncertainties: [],
@@ -88,7 +88,7 @@ test('policy loop replays search to reprint fetch to official fetch before final
               url: 'https://news.sina.com/sh/123.html',
               snippet: '日前绥化发文支持高新技术企业租金减免。',
               source: 'sina',
-              policy_grade: 'news_reprint',
+              access_source_grade: 'credible_reporting',
               kerry_quality_status: 'usable_results',
               kerry_quality_reason: 'Found news reprinted clues.',
             },
@@ -137,18 +137,18 @@ test('policy loop replays search to reprint fetch to official fetch before final
     'https://www.suihua.gov.cn/zw/txt.html',
   ]);
   assert.equal(seenStates.length, 4);
-  assert.equal(seenStates[1]?.discoveredCandidates[0]?.policy_grade, 'news_reprint');
+  assert.equal(seenStates[1]?.discoveredCandidates[0]?.access_source_grade, 'credible_reporting');
   assert.deepEqual(
     seenStates[2]?.fetchedEvidence[0]?.evidence_clues?.potential_official_urls,
     ['https://www.suihua.gov.cn/zw/txt.html'],
   );
   assert.equal(result.currentIteration, 4);
-  assert.equal(result.discoveredCandidates[0]?.policy_grade, 'news_reprint');
+  assert.equal(result.discoveredCandidates[0]?.access_source_grade, 'credible_reporting');
   assert.equal(result.fetchedEvidence[1]?.title, '关于印发高新技术企业租金减免政策的通知');
   assert.equal((result.decision.finalPackage as { status?: string } | undefined)?.status, 'FINAL_ASSERTION_STOP');
 });
 
-test('policy loop normalizes document numbers and promotes official_text after a successful document-number replay', async () => {
+test('policy loop normalizes document numbers and promotes official_product after a successful document-number replay', async () => {
   const targetDocNo = '绥政发〔2026〕7号';
   const seenStates: PolicyAgentState[] = [];
   const searchCalls: string[] = [];
@@ -181,7 +181,7 @@ test('policy loop normalizes document numbers and promotes official_text after a
         }
 
         if (step === 2) {
-          assert.equal(state.discoveredCandidates[0]?.policy_grade, 'news_reprint');
+          assert.equal(state.discoveredCandidates[0]?.access_source_grade, 'credible_reporting');
           return {
             decision: 'continue_fetch',
             reasoning: 'Fetch the reprint because it may contain a policy document number.',
@@ -214,7 +214,7 @@ test('policy loop normalizes document numbers and promotes official_text after a
           };
         }
 
-        assert.equal(state.discoveredCandidates.some((candidate) => candidate.policy_grade === 'official_text'), true);
+        assert.equal(state.discoveredCandidates.some((candidate) => candidate.access_source_grade === 'official_product'), true);
         return {
           decision: 'finalize',
           reasoning: 'Official text was located through document number replay.',
@@ -238,7 +238,7 @@ test('policy loop normalizes document numbers and promotes official_text after a
                 url: 'https://www.suihua.gov.cn/art.html',
                 snippet: '红头正文公告...',
                 source: 'suihua-gov',
-                policy_grade: 'official_text',
+                access_source_grade: 'official_product',
                 kerry_quality_status: 'usable_results',
                 kerry_quality_reason: 'Official target hit via document number search.',
               },
@@ -252,7 +252,7 @@ test('policy loop normalizes document numbers and promotes official_text after a
               url: 'https://www.chinatax.com/news.html',
               snippet: '转载内容...',
               source: 'chinatax',
-              policy_grade: 'news_reprint',
+              access_source_grade: 'credible_reporting',
               kerry_quality_status: 'usable_results',
               kerry_quality_reason: 'Found reprinted news.',
             },
@@ -283,7 +283,7 @@ test('policy loop normalizes document numbers and promotes official_text after a
   assert.deepEqual(searchCalls, ['黑龙江绥化企业减免', targetDocNo]);
   assert.deepEqual(fetchCalls, ['https://www.chinatax.com/news.html']);
   assert.equal(seenStates[2]?.fetchedEvidence[0]?.evidence_clues?.extracted_doc_no, targetDocNo);
-  assert.equal(result.discoveredCandidates.some((candidate) => candidate.policy_grade === 'official_text'), true);
+  assert.equal(result.discoveredCandidates.some((candidate) => candidate.access_source_grade === 'official_product'), true);
   assert.equal(result.loop_interrupted_by_gate, undefined);
   assert.equal((result.decision.finalPackage as { status?: string } | undefined)?.status, 'FINAL_ASSERTION_STOP');
 });
@@ -319,7 +319,7 @@ test('policy loop passes discovery history to the next agent decision while pres
 
         if (step === 2) {
           assert.equal(state.discoveredCandidates.length, 5);
-          assert.equal(state.discoveredCandidates.every((candidate) => candidate.policy_grade === 'news_reprint'), true);
+          assert.equal(state.discoveredCandidates.every((candidate) => candidate.access_source_grade === 'credible_reporting'), true);
           return {
             decision: 'continue_fetch',
             reasoning: 'Fetch one of the retained low-value candidates for deeper evidence.',
@@ -355,7 +355,7 @@ test('policy loop passes discovery history to the next agent decision while pres
           url: `https://corrupted-news.com/${index}.html`,
           snippet: '毫无价值的转载噪声文本'.repeat(20),
           source: 'noise-media',
-          policy_grade: 'news_reprint' as const,
+          access_source_grade: 'credible_reporting' as const,
           kerry_quality_status: 'usable_results' as const,
           kerry_quality_reason: 'Too much news',
         })),
@@ -454,7 +454,7 @@ test('policy loop keeps all non-official candidates in the active view', async (
             url: 'https://t.com/1.html',
             snippet: '普通转载噪声',
             source: 'garbage-news',
-            policy_grade: 'news_reprint',
+            access_source_grade: 'credible_reporting',
             kerry_quality_status: 'usable_results',
             kerry_quality_reason: 'Mixed results',
           },
@@ -464,7 +464,7 @@ test('policy loop keeps all non-official candidates in the active view', async (
             url: 'https://gov.cn/interp.html',
             snippet: '官方解读内容',
             source: 'gov-interpretation',
-            policy_grade: 'official_interpretation',
+            access_source_grade: 'official_access',
             kerry_quality_status: 'usable_results',
             kerry_quality_reason: 'Mixed results',
           },
@@ -474,7 +474,7 @@ test('policy loop keeps all non-official candidates in the active view', async (
             url: 'https://t.com/2.html',
             snippet: '转载中提到了关键文号',
             source: 'doc-news',
-            policy_grade: 'news_reprint',
+            access_source_grade: 'credible_reporting',
             kerry_quality_status: 'usable_results',
             kerry_quality_reason: 'Mixed results',
             evidence_clues: {
@@ -487,7 +487,7 @@ test('policy loop keeps all non-official candidates in the active view', async (
             url: 'https://gov.cn/index.html',
             snippet: '首页入口',
             source: 'gov-homepage',
-            policy_grade: 'portal_homepage',
+            access_source_grade: 'noise',
             kerry_quality_status: 'usable_results',
             kerry_quality_reason: 'Mixed results',
           },
@@ -587,7 +587,7 @@ test('policy loop keeps every current-turn fetch target candidate visible after 
             url: 'https://gov.cn/interp.html',
             snippet: '官方解读内容',
             source: 'high-interpretation',
-            policy_grade: 'official_interpretation',
+            access_source_grade: 'official_access',
             kerry_quality_status: 'usable_results',
             kerry_quality_reason: 'Mixed',
           },
@@ -597,7 +597,7 @@ test('policy loop keeps every current-turn fetch target candidate visible after 
             url: 'https://t.com/doc.html',
             snippet: '转载中提到了关键文号',
             source: 'high-doc',
-            policy_grade: 'news_reprint',
+            access_source_grade: 'credible_reporting',
             kerry_quality_status: 'usable_results',
             kerry_quality_reason: 'Mixed',
             evidence_clues: {
@@ -610,7 +610,7 @@ test('policy loop keeps every current-turn fetch target candidate visible after 
             url: targetGarbageUrl,
             snippet: '普通转载噪声',
             source: 'low-garbage',
-            policy_grade: 'news_reprint',
+            access_source_grade: 'credible_reporting',
             kerry_quality_status: 'usable_results',
             kerry_quality_reason: 'Mixed',
           },
@@ -637,198 +637,6 @@ test('policy loop keeps every current-turn fetch target candidate visible after 
   assert.equal(result.discoveredCandidates.length, 3);
   assert.equal((result.decision.finalPackage as { status?: string } | undefined)?.status, 'FINAL_ASSERTION_STOP');
 });
-
-test('policy loop requests final summary one round after evidence assessments reach the target', async () => {
-  const seenSignals: Array<string | undefined> = [];
-  let step = 0;
-
-  const result = await runPolicyTaskLoop(
-    { topic: '全国 OPC 政策' },
-    {
-      maxIterations: 5,
-      targetValidatedEvidenceCount: 3,
-      askAgent: async (state) => {
-        seenSignals.push(state.convergencePhase);
-        step += 1;
-
-        if (step === 1) {
-          return {
-            decision: 'continue_fetch',
-            reasoning: 'Fetch three high-authority sources.',
-            searchActions: [],
-            fetchActions: [
-              { url: 'https://www.ndrc.gov.cn/opc.html', why: 'Official trend evidence' },
-              { url: 'https://www.opcfoundation.cn/', why: 'Authority definition evidence' },
-              { url: 'https://std.samr.gov.cn/opc.pdf', why: 'National standard evidence' },
-            ],
-            uncertainties: [],
-            discardedLeads: [],
-          };
-        }
-
-        if (step === 2) {
-          return {
-            decision: 'continue_search',
-            reasoning: 'Classified fetched evidence; runtime should request summary next.',
-            searchActions: [{ query: 'should not run after convergence', why: 'would be ignored by convergence signal' }],
-            fetchActions: [],
-            evidenceAssessments: [
-              { url: 'https://www.ndrc.gov.cn/opc.html', qualityCategory: 'SILVER_STANDARD', validationReason: 'Official agency page directly clarifies OPC policy context.' },
-              { url: 'https://www.opcfoundation.cn/', qualityCategory: 'SILVER_STANDARD', validationReason: 'Authority page clarifies industrial OPC meaning.' },
-              { url: 'https://std.samr.gov.cn/opc.pdf', qualityCategory: 'GOLD_STANDARD', validationReason: 'National standards source.' },
-            ],
-            uncertainties: [],
-            discardedLeads: [],
-          };
-        }
-
-        if (step === 3) {
-          assert.equal(state.convergencePhase, 'post_convergence_review');
-          return {
-            decision: 'continue_search',
-            reasoning: 'Post-convergence review round completed; request final summary next.',
-            searchActions: [],
-            fetchActions: [],
-            uncertainties: [],
-            discardedLeads: [],
-          };
-        }
-
-        assert.equal(state.convergencePhase, 'final_summary');
-        return {
-          decision: 'summarize_and_stop',
-          reasoning: 'Target validated evidence count reached; summarize and stop.',
-          searchActions: [],
-          fetchActions: [],
-          uncertainties: [],
-          discardedLeads: [],
-          finalPackage: {
-            status: 'FINAL_ASSERTION_STOP',
-            evidence: state.fetchedEvidence.map((page) => ({ url: page.finalUrl, category: page.qualityCategory })),
-          },
-        };
-      },
-      searchTool: {
-        search: async (query) => [{
-          query,
-          title: 'unexpected search after classification',
-          url: 'https://noise.example/search-hop',
-          snippet: 'search should be bypassed by summary on next round',
-          source: 'unexpected-search',
-        }],
-      },
-      fetchTool: {
-        fetch: async (url) => ({
-          requestedUrl: url,
-          finalUrl: url,
-          title: url,
-          content: 'substantive content',
-          backend: 'fetch-backend',
-        }),
-      },
-    },
-  );
-
-  assert.equal(step, 4);
-  assert.deepEqual(seenSignals, [undefined, undefined, 'post_convergence_review', 'final_summary']);
-  assert.equal(result.decision.decision, 'summarize_and_stop');
-  assert.equal(result.fetchedEvidence.filter((page) => page.qualityCategory === 'GOLD_STANDARD' || page.qualityCategory === 'SILVER_STANDARD').length, 3);
-});
-
-
-test('policy loop does not terminate on finalize during post_convergence_review and still advances to final_summary', async () => {
-  const seenSignals: Array<string | undefined> = [];
-  let step = 0;
-
-  const result = await runPolicyTaskLoop(
-    { topic: '常州市 医疗补贴' },
-    {
-      maxIterations: 5,
-      targetValidatedEvidenceCount: 3,
-      askAgent: async (state) => {
-        seenSignals.push(state.convergencePhase);
-        step += 1;
-
-        if (step === 1) {
-          return {
-            decision: 'continue_fetch',
-            reasoning: 'Fetch three local evidence pages first.',
-            searchActions: [],
-            fetchActions: [
-              { url: 'https://www.changzhou.gov.cn/a.html', why: 'Local evidence A' },
-              { url: 'https://www.changzhou.gov.cn/b.html', why: 'Local evidence B' },
-              { url: 'https://www.changzhou.gov.cn/c.html', why: 'Local evidence C' },
-            ],
-            uncertainties: [],
-            discardedLeads: [],
-          };
-        }
-
-        if (step === 2) {
-          return {
-            decision: 'continue_search',
-            reasoning: 'Classify fetched evidence so convergence can start.',
-            searchActions: [],
-            fetchActions: [],
-            evidenceAssessments: [
-              { url: 'https://www.changzhou.gov.cn/a.html', qualityCategory: 'GOLD_STANDARD', validationReason: 'Current local substantive page A.' },
-              { url: 'https://www.changzhou.gov.cn/b.html', qualityCategory: 'SILVER_STANDARD', validationReason: 'Current local substantive page B.' },
-              { url: 'https://www.changzhou.gov.cn/c.html', qualityCategory: 'SILVER_STANDARD', validationReason: 'Current local substantive page C.' },
-            ],
-            uncertainties: [],
-            discardedLeads: [],
-          };
-        }
-
-        if (step === 3) {
-          assert.equal(state.convergencePhase, 'post_convergence_review');
-          return {
-            decision: 'finalize',
-            reasoning: 'Model wrongly tries to finalize during post-convergence review.',
-            searchActions: [],
-            fetchActions: [],
-            uncertainties: [],
-            discardedLeads: [],
-            finalPackage: {
-              status: 'PREMATURE_FINALIZE',
-            },
-          };
-        }
-
-        assert.equal(state.convergencePhase, 'final_summary');
-        return {
-          decision: 'summarize_and_stop',
-          reasoning: 'Final summary round after review-only phase.',
-          searchActions: [],
-          fetchActions: [],
-          uncertainties: [],
-          discardedLeads: [],
-          finalPackage: {
-            status: 'FINAL_ASSERTION_STOP',
-          },
-        };
-      },
-      searchTool: {
-        search: async () => [],
-      },
-      fetchTool: {
-        fetch: async (url) => ({
-          requestedUrl: url,
-          finalUrl: url,
-          title: url,
-          content: 'substantive content',
-          backend: 'fetch-backend',
-        }),
-      },
-    },
-  );
-
-  assert.equal(step, 4);
-  assert.deepEqual(seenSignals, [undefined, undefined, 'post_convergence_review', 'final_summary']);
-  assert.equal(result.decision.decision, 'summarize_and_stop');
-  assert.equal((result.decision.finalPackage as { status?: string } | undefined)?.status, 'FINAL_ASSERTION_STOP');
-});
-
 
 test('policy loop interrupts at maxIterations when blocked retries would otherwise continue forever', async () => {
   const seenStates: PolicyAgentState[] = [];
@@ -916,7 +724,7 @@ test('policy loop interrupts at maxIterations when blocked retries would otherwi
                 url: 'https://waf.example/blocked',
                 snippet: '行政站点触发 WAF 校验，暂时无法获取正文。',
                 source: 'waf-probe',
-                policy_grade: 'corrupted',
+                access_source_grade: 'corrupted',
                 kerry_quality_status: 'blocked_by_waf',
                 kerry_quality_reason: 'Administrative WAF blocked repeated document-number retrieval.',
               },
@@ -930,7 +738,7 @@ test('policy loop interrupts at maxIterations when blocked retries would otherwi
               url: 'https://www.chinatax.com/news.html',
               snippet: '转载内容...',
               source: 'chinatax',
-              policy_grade: 'news_reprint',
+              access_source_grade: 'credible_reporting',
               kerry_quality_status: 'usable_results',
               kerry_quality_reason: 'Found reprinted news.',
             },
@@ -962,7 +770,59 @@ test('policy loop interrupts at maxIterations when blocked retries would otherwi
   assert.deepEqual(searchCalls, ['绥化企业减免', '绥政发〔2026〕7号']);
   assert.deepEqual(fetchCalls, ['https://www.chinatax.com/news.html']);
   assert.equal(result.currentIteration, 3);
-  assert.equal(result.loop_interrupted_by_gate, true);
-  assert.equal(result.final_quality_status, 'blocked_by_waf');
-  assert.equal(result.final_quality_reason, 'Administrative WAF blocked repeated document-number retrieval.');
+  assert.equal(result.loop_interrupted_by_gate, undefined);
+  assert.equal(result.final_quality_status, undefined);
+  assert.equal(result.final_quality_reason, undefined);
+});
+
+
+test('policy loop preserves a model summarize_and_stop decision without fetched evidence', async () => {
+  const decision: PolicyAgentDecision = {
+    decision: 'summarize_and_stop',
+    reasoning: 'The model chose to stop.',
+    searchActions: [],
+    fetchActions: [],
+    uncertainties: ['No evidence was fetched'],
+    discardedLeads: [],
+    finalPackage: { status: 'MODEL_STOP' },
+  };
+
+  const result = await runPolicyTaskLoop(
+    { topic: 'model-owned stop' },
+    {
+      maxIterations: 3,
+      targetHotspotCount: 999,
+      targetValidatedEvidenceCount: 999,
+      askAgent: async () => decision,
+      searchTool: { search: async () => [] },
+      fetchTool: { fetch: async () => { throw new Error('must not fetch'); } },
+    },
+  );
+
+  assert.equal(result.decision, decision);
+  assert.equal(result.final_quality_status, undefined);
+  assert.equal(result.currentIteration, 1);
+});
+
+test('policy loop preserves model continuation without target shortfall gates', async () => {
+  const decisions: PolicyAgentDecision[] = [
+    { decision: 'continue_search', reasoning: 'model says search', searchActions: [], fetchActions: [], uncertainties: [], discardedLeads: [] },
+    { decision: 'continue_fetch', reasoning: 'model says fetch', searchActions: [], fetchActions: [], uncertainties: [], discardedLeads: [] },
+  ];
+  let index = 0;
+  const result = await runPolicyTaskLoop(
+    { topic: 'model-owned continuation' },
+    {
+      maxIterations: 2,
+      targetHotspotCount: 999,
+      targetValidatedEvidenceCount: 999,
+      askAgent: async () => decisions[index++]!,
+      searchTool: { search: async () => [] },
+      fetchTool: { fetch: async () => { throw new Error('must not fetch'); } },
+    },
+  );
+
+  assert.equal(result.decision.decision, 'continue_fetch');
+  assert.equal(result.final_quality_status, undefined);
+  assert.equal('insufficient_target_count' in result, false);
 });
