@@ -13,7 +13,7 @@ test('keeps a valid model decision and final_package without business rewriting'
   assert.equal(result.ok, true);
   assert.equal(result.decision?.decision, 'continue_search');
   assert.deepEqual(result.decision?.searchActions, [{ query: '国内工具', why: 'model choice' }]);
-  assert.equal((result.decision as Record<string, unknown>).extraModelField, undefined);
+  assert.deepEqual((result as { envelope?: Record<string, unknown> }).envelope?.extraModelField, { keep: true });
   assert.equal(result.decision?.finalPackage, null);
 });
 
@@ -33,6 +33,39 @@ test('rejects only malformed actions and accepts valid sibling actions', () => {
   assert.equal(result.ok, true);
   assert.equal(result.actionErrors?.length, 1);
   assert.deepEqual(result.decision?.fetchActions, [{ url: 'https://example.com', why: 'valid' }]);
+});
+
+test('accepts actions without why when query or URL is syntactically valid', () => {
+  const result = parseDecisionEnvelope(JSON.stringify({
+    decision: 'continue_fetch',
+    searchActions: [{ query: '国内工具' }],
+    fetchActions: [{ url: 'https://example.com/path' }],
+  }));
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.decision?.searchActions, [{ query: '国内工具' }]);
+  assert.deepEqual(result.decision?.fetchActions, [{ url: 'https://example.com/path' }]);
+});
+
+test('returns a top-level protocol error for non-array action containers', () => {
+  const result = parseDecisionEnvelope(JSON.stringify({
+    decision: 'continue_search',
+    searchActions: {},
+    fetchActions: [],
+  }));
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.scope, 'envelope');
+  assert.equal(result.error?.code, 'INVALID_ACTIONS');
+});
+
+test('rejects fetch actions whose URL cannot be parsed', () => {
+  const result = parseDecisionEnvelope(JSON.stringify({
+    decision: 'continue_fetch',
+    searchActions: [],
+    fetchActions: [{ url: 'not a URL' }, { url: 'https://example.com' }],
+  }));
+  assert.equal(result.ok, true);
+  assert.equal(result.actionErrors?.length, 1);
+  assert.deepEqual(result.decision?.fetchActions, [{ url: 'https://example.com' }]);
 });
 
 test('returns a protocol error for missing decisions', () => {

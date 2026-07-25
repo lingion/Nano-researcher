@@ -16,7 +16,8 @@ export type ProtocolErrorCode =
   | 'INVALID_JSON'
   | 'INVALID_ENVELOPE'
   | 'MISSING_DECISION'
-  | 'UNKNOWN_DECISION';
+  | 'UNKNOWN_DECISION'
+  | 'INVALID_ACTIONS';
 
 export interface ProtocolError {
   scope: 'envelope' | 'decision' | 'action';
@@ -29,6 +30,7 @@ export interface ProtocolError {
 export interface DecisionEnvelope {
   ok: true;
   decision: PolicyAgentDecision;
+  envelope: Record<string, unknown>;
   actionErrors?: ProtocolError[];
 }
 
@@ -65,11 +67,11 @@ function parseActions<T extends AgentSearchAction | AgentFetchAction>(
     }
     const why = stringField(item.why);
     const field = kind === 'search' ? stringField(item.query) : stringField(item.url);
-    if (!field || !why) {
-      errors.push({ scope: 'action', code: 'INVALID_ACTION', message: `${kind} action requires non-empty ${kind === 'search' ? 'query' : 'url'} and why`, actionType: kind, actionIndex: index });
+    if (!field || (kind === 'fetch' && (() => { try { new URL(field); return false; } catch { return true; } })())) {
+      errors.push({ scope: 'action', code: 'INVALID_ACTION', message: `${kind} action requires a valid ${kind === 'search' ? 'query' : 'URL'}`, actionType: kind, actionIndex: index });
       return [];
     }
-    return [{ [kind === 'search' ? 'query' : 'url']: field, why }] as T[];
+    return [{ [kind === 'search' ? 'query' : 'url']: field, ...(why ? { why } : {}) }] as T[];
   });
 }
 
@@ -92,6 +94,13 @@ export function parseDecisionEnvelope(raw: string): DecisionParseResult {
     return { ok: false, error: { scope: 'decision', code: 'UNKNOWN_DECISION', message: `Unknown decision: ${String(decisionValue)}` } };
   }
 
+  if (parsed.searchActions !== undefined && !Array.isArray(parsed.searchActions)) {
+    return { ok: false, error: { scope: 'envelope', code: 'INVALID_ACTIONS', message: 'searchActions must be an array' } };
+  }
+  if (parsed.fetchActions !== undefined && !Array.isArray(parsed.fetchActions)) {
+    return { ok: false, error: { scope: 'envelope', code: 'INVALID_ACTIONS', message: 'fetchActions must be an array' } };
+  }
+
   const actionErrors: ProtocolError[] = [];
   const searchActions = parseActions<AgentSearchAction>(parsed.searchActions, 'search', actionErrors);
   const fetchActions = parseActions<AgentFetchAction>(parsed.fetchActions, 'fetch', actionErrors);
@@ -106,5 +115,5 @@ export function parseDecisionEnvelope(raw: string): DecisionParseResult {
     discardedLeads: Array.isArray(parsed.discardedLeads) ? parsed.discardedLeads.filter((item): item is string => typeof item === 'string') : [],
   };
 
-  return actionErrors.length > 0 ? { ok: true, decision: result, actionErrors } : { ok: true, decision: result };
+  return actionErrors.length > 0 ? { ok: true, decision: result, envelope: parsed, actionErrors } : { ok: true, decision: result, envelope: parsed };
 }
