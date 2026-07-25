@@ -14,13 +14,28 @@ export interface EvidenceAssessment {
   validationReason: string;
 }
 
+export type PolicyDecision = 'continue_search' | 'continue_fetch' | 'finalize' | 'stop' | 'summarize_and_stop';
+
+/** Internal representation after the protocol maps the canonical wire field. */
 export interface PolicyAgentDecision {
-  decision: 'continue_search' | 'continue_fetch' | 'finalize' | 'stop' | 'summarize_and_stop';
+  decision: PolicyDecision;
   reasoning: string;
   searchActions: AgentSearchAction[];
   fetchActions: AgentFetchAction[];
   evidenceAssessments?: EvidenceAssessment[];
-  finalPackage?: unknown;
+  finalPackage?: unknown | null;
   uncertainties: string[];
   discardedLeads: string[];
+}
+
+/** Canonical model-facing wire shape. */
+export interface PolicyAgentWireDecision {
+  decision: PolicyDecision;
+  reasoning?: string;
+  searchActions?: AgentSearchAction[];
+  fetchActions?: AgentFetchAction[];
+  evidenceAssessments?: EvidenceAssessment[];
+  final_package?: unknown | null;
+  uncertainties?: string[];
+  discardedLeads?: string[];
 }
