@@ -105,6 +105,7 @@ export function parseDecisionEnvelope(raw: string): DecisionParseResult {
   const searchActions = parseActions<AgentSearchAction>(parsed.searchActions, 'search', actionErrors);
   const fetchActions = parseActions<AgentFetchAction>(parsed.fetchActions, 'fetch', actionErrors);
   const result: PolicyAgentDecision = {
+    ...parsed,
     decision: decisionValue as PolicyAgentDecision['decision'],
     reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : '',
     searchActions,

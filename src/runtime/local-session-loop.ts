@@ -21,6 +21,7 @@ export async function runOneSessionIteration(
   });
 
   const discovered = [...state.discoveredCandidates];
+  const transportFacts = [...(state.transportFacts ?? [])];
   for (const [index, action] of decision.searchActions.entries()) {
     console.log('[FORENSIC] consuming search action', JSON.stringify({
       iteration: state.currentIteration,
@@ -72,7 +73,8 @@ export async function runOneSessionIteration(
           error: serializeError(error),
         },
       });
-      throw error;
+      transportFacts.push({ type: 'transport_error', operation: 'search', query: action.query, error: serializeError(error) });
+      continue;
     }
   }
 
@@ -142,7 +144,8 @@ export async function runOneSessionIteration(
           error: serializeError(error),
         },
       });
-      throw error;
+      transportFacts.push({ type: 'transport_error', operation: 'fetch', url: action.url, error: serializeError(error) });
+      continue;
     }
   }
 
@@ -152,6 +155,7 @@ export async function runOneSessionIteration(
     fetchedEvidence: fetched,
     currentIteration: state.currentIteration + 1,
     uncertainties: decision.uncertainties,
+    transportFacts,
   };
 
   deps.onDebugEvent?.({

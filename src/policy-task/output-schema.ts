@@ -26,6 +26,9 @@ export interface PolicyAgentDecision {
   finalPackage?: unknown | null;
   uncertainties: string[];
   discardedLeads: string[];
+  /** Protocol-only failures from model wire parsing; never interpreted as a business decision. */
+  protocolErrors?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
 }
 
 /** Canonical model-facing wire shape. */

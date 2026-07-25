@@ -568,9 +568,17 @@ export async function askRealClaudeDecision(
 
     const parsed = parseDecisionEnvelope(rawText);
     if (!parsed.ok) {
-      const error = new Error(parsed.error.message);
+      const decision = {
+        decision: undefined,
+        reasoning: '',
+        searchActions: [],
+        fetchActions: [],
+        uncertainties: [],
+        discardedLeads: [],
+        protocolErrors: [parsed.error],
+      } as unknown as import('../policy-task/output-schema.js').PolicyAgentDecision;
       options.onDebugEvent?.({ type: 'model.protocol_error', payload: { error: parsed.error } });
-      throw error;
+      return decision;
     }
     const decision = parsed.decision;
     options.onDebugEvent?.({
