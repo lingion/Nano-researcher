@@ -3,10 +3,10 @@ dist/
 .DS_Store
 /artifacts/
 /*-report.txt
-output/
-output-live/
-outputs/
-workspace/
+/output/
+/output-live/
+/outputs/
+/workspace/
 !src/workspace/
 !src/workspace/**
 .env
