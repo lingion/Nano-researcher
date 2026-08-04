@@ -7,7 +7,8 @@ import { join } from 'node:path';
 const projectRoot = new URL('..', import.meta.url);
 
 function runPolicyScanner(args: string[], cwd?: string) {
-  return spawnSync('pnpm', ['exec', 'tsx', new URL('../bin/policy-scanner.ts', import.meta.url).pathname, ...args], {
+  const tsxCli = new URL('../node_modules/tsx/dist/cli.mjs', import.meta.url).pathname;
+  return spawnSync(process.execPath, [tsxCli, new URL('../bin/policy-scanner.ts', import.meta.url).pathname, ...args], {
     cwd: cwd ?? projectRoot,
     encoding: 'utf8',
   });

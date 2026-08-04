@@ -1,4 +1,5 @@
 import { withTimeout, RuntimeTimeoutError, retryDelayMs, isRetryableRuntimeError } from './reliability.ts';
+import { summarizeError, safeSerializeDebugPayload } from './sanitize-debug.ts';
 
 export interface NanoclawRuntimeConfig {
   apiKey: string;
@@ -20,6 +21,8 @@ export interface GatewayModelProbeResult {
   sampleModelIds: string[];
   includesConfiguredModel: boolean;
   configuredModel: string;
+  configuredModels?: string[];
+  includedConfiguredModels?: string[];
 }
 
 export interface EmptyResponseDiagnostics {
@@ -94,6 +97,15 @@ function inferProviderFromBaseUrl(baseURL: string): NanoclawRuntimeConfig['provi
     : 'anthropic';
 }
 
+function parseOptionalTimeout(raw: string | undefined, name: string): number | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative finite number`);
+  }
+  return value;
+}
+
 export function resolveNanoclawRuntimeConfig(): NanoclawRuntimeConfig {
   const apiKey = process.env.NANOCLAW_API_KEY ?? process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -118,8 +130,8 @@ export function resolveNanoclawRuntimeConfig(): NanoclawRuntimeConfig {
     ...(process.env.POLICY_AGENT_LLM_FALLBACK_MODEL || process.env.NANOCLAW_FALLBACK_MODEL
       ? { fallbackModel: process.env.POLICY_AGENT_LLM_FALLBACK_MODEL ?? process.env.NANOCLAW_FALLBACK_MODEL }
       : {}),
-    ...(process.env.LIVE_AUDIT_MODEL_TIMEOUT_MS
-      ? { requestTimeoutMs: Number(process.env.LIVE_AUDIT_MODEL_TIMEOUT_MS) }
+    ...(parseOptionalTimeout(process.env.LIVE_AUDIT_MODEL_TIMEOUT_MS, 'LIVE_AUDIT_MODEL_TIMEOUT_MS') !== undefined
+      ? { requestTimeoutMs: parseOptionalTimeout(process.env.LIVE_AUDIT_MODEL_TIMEOUT_MS, 'LIVE_AUDIT_MODEL_TIMEOUT_MS') }
       : {}),
   };
 }
@@ -342,18 +354,8 @@ function extractAnthropicText(payload: unknown): string {
     .join('');
 }
 
-function extractErrorDetail(payload: unknown): string {
-  if (typeof payload === 'string') return payload;
-
-  const record = payload as {
-    error?: string | { message?: string };
-    message?: string;
-  };
-
-  if (typeof record.error === 'string') return record.error;
-  if (typeof record.error?.message === 'string') return record.error.message;
-  if (typeof record.message === 'string') return record.message;
-  return JSON.stringify(payload);
+function extractErrorDetail(_payload: unknown): string {
+  return 'upstream_error_payload_redacted';
 }
 
 function trackAndLogRawStreamChunks(rawResponseBody: string): void {
@@ -361,21 +363,21 @@ function trackAndLogRawStreamChunks(rawResponseBody: string): void {
   if (!rawResponseBody || !rawResponseBody.includes('data:')) return;
 
   const lines = rawResponseBody.split('\n');
-  console.error('\n=== [SSE RAW STREAM CUTTING SHAPES] ===');
-  console.error(`Total raw lines detected: ${lines.length}`);
-
   let chunkCount = 0;
   let nonEmptyChunkCount = 0;
-  const sampleDeltas: string[] = [];
+  let parseFailureCount = 0;
+  let doneSeen = false;
+  let contentFieldCount = 0;
+  let messageContentFieldCount = 0;
+  let finishReasonCount = 0;
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (trimmed === 'data: [DONE]') {
-      console.error('[Line] -> data: [DONE] reached.');
+      doneSeen = true;
       continue;
     }
-
     if (!trimmed.startsWith('data:')) continue;
 
     chunkCount += 1;
@@ -387,33 +389,27 @@ function trackAndLogRawStreamChunks(rawResponseBody: string): void {
       const message = choice?.message && typeof choice.message === 'object' ? choice.message as Record<string, unknown> : undefined;
       const deltaContent = delta?.content;
       const messageContent = message?.content;
-      const finishReason = choice?.finish_reason ?? parsedChunk.finish_reason ?? 'missing';
-      const hasText = (typeof deltaContent === 'string' && deltaContent.length > 0)
-        || (typeof messageContent === 'string' && messageContent.length > 0);
-
-      if (hasText) {
-        nonEmptyChunkCount += 1;
-        if (sampleDeltas.length < 3) {
-          sampleDeltas.push(`[Chunk ${chunkCount}] text="${String(deltaContent ?? messageContent)}"`);
-        }
-      }
-
-      if (chunkCount <= 3) {
-        console.error(
-          `[Chunk ${chunkCount} Skeleton] delta_has_content_field=${Object.prototype.hasOwnProperty.call(delta ?? {}, 'content')}, message_has_content_field=${Object.prototype.hasOwnProperty.call(message ?? {}, 'content')}, finish_reason=${String(finishReason)}`,
-        );
-        console.error(`[Chunk ${chunkCount} Raw] ${trimmed.slice(0, 200)}`);
-      }
+      const finishReason = choice?.finish_reason ?? parsedChunk.finish_reason;
+      if (typeof deltaContent === 'string' && deltaContent.length > 0) nonEmptyChunkCount += 1;
+      if (typeof messageContent === 'string' && messageContent.length > 0 && typeof deltaContent !== 'string') nonEmptyChunkCount += 1;
+      if (Object.prototype.hasOwnProperty.call(delta ?? {}, 'content')) contentFieldCount += 1;
+      if (Object.prototype.hasOwnProperty.call(message ?? {}, 'content')) messageContentFieldCount += 1;
+      if (finishReason !== undefined && finishReason !== null) finishReasonCount += 1;
     } catch {
-      console.error(`[Chunk ${chunkCount} Parse Error] Failed to parse: ${trimmed.slice(0, 100)}`);
+      parseFailureCount += 1;
     }
   }
 
-  console.error(`[Verdict Metadata] Total Chunks: ${chunkCount}, Non-Empty Chunks: ${nonEmptyChunkCount}`);
-  if (sampleDeltas.length > 0) {
-    console.error(`[Captured Evidence Seeds]:\n  ${sampleDeltas.join('\n  ')}`);
-  }
-  console.error('=== [END OF SSE CUTTING SHAPES] ===\n');
+  console.error('[SSE AGGREGATE METADATA]', safeSerializeDebugPayload({
+    lineCount: lines.length,
+    chunkCount,
+    nonEmptyChunkCount,
+    parseFailureCount,
+    doneSeen,
+    contentFieldCount,
+    messageContentFieldCount,
+    finishReasonCount,
+  }));
 }
 
 function parseEventStreamPayload(text: string): unknown {
@@ -520,6 +516,10 @@ export async function probeNanoclawGatewayModels(
   const payload = await readResponsePayload(response);
   const sampleModelIds = normalizeModelIds(payload);
 
+  const configuredModels = [config.model, config.fallbackModel]
+    .filter((model): model is string => typeof model === 'string' && model.trim() !== '')
+    .filter((model, index, models) => models.indexOf(model) === index);
+
   return {
     endpoint,
     ok: response.ok,
@@ -533,6 +533,8 @@ export async function probeNanoclawGatewayModels(
     sampleModelIds,
     includesConfiguredModel: sampleModelIds.includes(config.model),
     configuredModel: config.model,
+    configuredModels,
+    includedConfiguredModels: configuredModels.filter((model) => sampleModelIds.includes(model)),
   };
 }
 
@@ -552,15 +554,33 @@ export async function callNanoclawModel(
     config?: NanoclawRuntimeConfig;
     fetchImpl?: typeof fetch;
     jitterSource?: () => number;
-    sleepImpl?: (delayMs: number) => Promise<void>;
+    sleepImpl?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+    signal?: AbortSignal;
     onDebugEvent?: (event: { type: string; payload: Record<string, unknown> }) => void;
   } = {},
 ): Promise<string> {
   const config = options.config ?? resolveNanoclawRuntimeConfig();
   const fetchImpl = options.fetchImpl ?? fetch;
   const jitterSource = options.jitterSource ?? (() => Math.floor(Math.random() * 50));
-  const sleepImpl = options.sleepImpl ?? ((delayMs: number) => new Promise<void>((resolve) => {
-    setTimeout(resolve, delayMs);
+  const sleepImpl = options.sleepImpl ?? ((delayMs: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(signal?.reason ?? new DOMException('The operation was aborted', 'AbortError'));
+    };
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
   }));
   const onDebugEvent = options.onDebugEvent;
 
@@ -585,6 +605,7 @@ export async function callNanoclawModel(
   const maxAttempts = 3;
 
   async function requestForModel(model: string): Promise<string> {
+    if (options.signal?.aborted) throw options.signal.reason ?? new DOMException('The operation was aborted', 'AbortError');
     const requestConfig = { ...config, model };
     const requestBody: Record<string, unknown> = config.provider === 'openai'
       ? { model, stream: false, messages: [{ role: 'user', content: prompt }] }
@@ -593,11 +614,10 @@ export async function callNanoclawModel(
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        const controller = new AbortController();
         const response = await withTimeout(
-          fetchImpl(endpoint, {
+          (signal) => fetchImpl(endpoint, {
             method: 'POST',
-            signal: controller.signal,
+            signal,
             headers: {
               'content-type': 'application/json',
               authorization: `Bearer ${config.apiKey}`,
@@ -607,13 +627,15 @@ export async function callNanoclawModel(
           }),
           config.requestTimeoutMs ?? 120_000,
           `model:${model}`,
-          () => controller.abort(),
+          undefined,
+          options.signal,
         );
         const { payload, text: responseText } = await readResponsePayloadWithText(response);
         if (!response.ok) {
           const detail = extractErrorDetail(payload);
           if (attempt < maxAttempts && isRetriableStatus(response.status)) {
-            await sleepImpl(retryDelayMs(attempt, jitterSource()));
+            if (options.signal?.aborted) throw options.signal.reason ?? new DOMException('The operation was aborted', 'AbortError');
+            await sleepImpl(retryDelayMs(attempt, jitterSource()), options.signal);
             continue;
           }
           throw new Error(`Nanoclaw request failed with ${response.status} ${response.statusText}: ${detail}`);
@@ -624,14 +646,17 @@ export async function callNanoclawModel(
         const emptyResponseError = new NanoclawEmptyResponseError('Gateway returned verified empty response after retries', diagnostics);
         if (attempt < maxAttempts && shouldRetryStructurallyValidEmptyResponse(diagnostics)) {
           lastError = emptyResponseError;
-          await sleepImpl(retryDelayMs(attempt, jitterSource()));
+          await sleepImpl(retryDelayMs(attempt, jitterSource()), options.signal);
           continue;
         }
         throw emptyResponseError;
       } catch (error) {
+        if (options.signal?.aborted) {
+          throw options.signal.reason ?? error;
+        }
         if (attempt < maxAttempts && (error instanceof RuntimeTimeoutError || isRetryableRuntimeError(error))) {
-          onDebugEvent?.({ type: 'fallback.retry.start', payload: { model, attempt, delayMs: retryDelayMs(attempt, jitterSource()), reason: error instanceof Error ? error.message : String(error) } });
-          await sleepImpl(retryDelayMs(attempt, jitterSource()));
+          onDebugEvent?.({ type: 'fallback.retry.start', payload: { model, attempt, delayMs: retryDelayMs(attempt, jitterSource()), reason: summarizeError(error) } });
+          await sleepImpl(retryDelayMs(attempt, jitterSource()), options.signal);
           continue;
         }
         throw error;
@@ -643,8 +668,11 @@ export async function callNanoclawModel(
   try {
     return await requestForModel(config.model);
   } catch (primaryError) {
+    if (options.signal?.aborted) {
+      throw options.signal.reason ?? primaryError;
+    }
     if (!config.fallbackModel || config.fallbackModel === config.model) throw primaryError;
-    onDebugEvent?.({ type: 'fallback.switch', payload: { fromModel: config.model, toModel: config.fallbackModel, reason: primaryError instanceof Error ? primaryError.message : String(primaryError) } });
+    onDebugEvent?.({ type: 'fallback.switch', payload: { fromModel: config.model, toModel: config.fallbackModel, reason: summarizeError(primaryError) } });
     return await requestForModel(config.fallbackModel);
   }
 

@@ -124,3 +124,41 @@ test('writeRunTranscript.sync syncs the temp file before rename and fsyncs the d
   };
   assert.equal(persisted.task?.topic, '黑龙江高企租金减免');
 });
+
+test('writeRunTranscript debug mode redacts sensitive projection while business mode preserves evidence', async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), 'local-policy-agent-write-transcript-redaction-'));
+  const debugPath = path.join(outputDir, 'debug.json');
+  const businessPath = path.join(outputDir, 'business.json');
+  const payload = {
+    message: 'SYNTHETIC_UPSTREAM_MESSAGE',
+    headers: { authorization: 'SYNTHETIC_HEADER_SECRET' },
+    content: 'SYNTHETIC_PAGE_CONTENT',
+    prompt: 'SYNTHETIC_MODEL_OUTPUT',
+    evidence: '完整业务正文',
+  };
+
+  await writeRunTranscript(debugPath, payload, { mode: 'debug' });
+  await writeRunTranscript(businessPath, payload);
+
+  const debugText = await readFile(debugPath, 'utf8');
+  const businessText = await readFile(businessPath, 'utf8');
+  assert.doesNotMatch(debugText, /SYNTHETIC_UPSTREAM_MESSAGE|SYNTHETIC_HEADER_SECRET|SYNTHETIC_PAGE_CONTENT|SYNTHETIC_MODEL_OUTPUT/);
+  assert.match(debugText, /evidence/);
+  assert.match(businessText, /SYNTHETIC_UPSTREAM_MESSAGE|SYNTHETIC_HEADER_SECRET|SYNTHETIC_PAGE_CONTENT|SYNTHETIC_MODEL_OUTPUT/);
+  assert.match(businessText, /完整业务正文/);
+});
+
+test('writeRunTranscript.sync debug mode redacts sensitive projection', async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), 'local-policy-agent-write-transcript-sync-redaction-'));
+  const outputPath = path.join(outputDir, 'debug.json');
+
+  writeRunTranscript.sync(outputPath, {
+    stack: 'SYNTHETIC_STACK',
+    body: 'SYNTHETIC_PAGE_CONTENT',
+    status: 'degraded',
+  }, { mode: 'debug' });
+
+  const text = await readFile(outputPath, 'utf8');
+  assert.doesNotMatch(text, /SYNTHETIC_STACK|SYNTHETIC_PAGE_CONTENT/);
+  assert.match(text, /degraded/);
+});

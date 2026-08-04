@@ -18,7 +18,7 @@ test('response builder assembles the standard four-layer Cloudflare-aligned cont
         url: 'https://www.suihua.gov.cn/policy/1.html',
         snippet: '官方正文摘要',
         source: 'suihua-gov',
-        policy_grade: 'official_text',
+        access_source_grade: 'official_product',
       },
       {
         query: '绥化高新减免政策',
@@ -26,7 +26,7 @@ test('response builder assembles the standard four-layer Cloudflare-aligned cont
         url: 'https://www.suihua.gov.cn/interp/1.html',
         snippet: '政策解读摘要',
         source: 'suihua-gov',
-        policy_grade: 'official_interpretation',
+        access_source_grade: 'official_access',
       },
     ],
     metricsOverrides: {
@@ -62,7 +62,7 @@ test('response builder preserves explicit metric overrides instead of defaulting
         url: 'https://www.suihua.gov.cn/policy/1.html',
         snippet: '官方正文摘要',
         source: 'suihua-gov',
-        policy_grade: 'official_text',
+        access_source_grade: 'official_product',
       },
     ],
     metricsOverrides: {

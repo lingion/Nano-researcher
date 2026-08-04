@@ -3,11 +3,14 @@ export interface SearchAttemptRecord {
   source: string;
 }
 
-export type PolicyGrade =
-  | 'official_text'
-  | 'official_interpretation'
-  | 'news_reprint'
-  | 'portal_homepage'
+export type AccessSourceGrade =
+  | 'official_product'
+  | 'official_access'
+  | 'official_docs'
+  | 'official_announcement'
+  | 'official_github'
+  | 'credible_reporting'
+  | 'noise'
   | 'corrupted';
 
 export type KerryQualityStatus =
@@ -31,7 +34,7 @@ export interface SearchDiscoveryRecord {
   filtered_count?: number;
   merged_count?: number;
   deduped_count?: number;
-  policy_grade?: PolicyGrade;
+  access_source_grade?: AccessSourceGrade;
   kerry_quality_status?: KerryQualityStatus;
   kerry_quality_reason?: string;
 }

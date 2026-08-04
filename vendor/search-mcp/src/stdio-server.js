@@ -58,8 +58,8 @@ export async function startStdioServer(options = {}) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  startStdioServer().catch((error) => {
-    console.error(error);
+  startStdioServer().catch(() => {
+    console.error('search-mcp stdio server failed to start');
     process.exit(1);
   });
 }

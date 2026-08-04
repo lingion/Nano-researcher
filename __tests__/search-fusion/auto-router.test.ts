@@ -50,7 +50,7 @@ test('search response quality marks junk-heavy policy mismatches as intent misma
       snippet: '低价租房 广告 推广',
       source: 'ad-network',
       query: '绥化高新减免政策',
-      policy_grade: 'news_reprint',
+      access_source_grade: 'credible_reporting',
     },
     {
       title: '今日航班特价',
@@ -58,7 +58,7 @@ test('search response quality marks junk-heavy policy mismatches as intent misma
       snippet: '航班 优惠 机票',
       source: 'travel-site',
       query: '绥化高新减免政策',
-      policy_grade: 'portal_homepage',
+      access_source_grade: 'noise',
     },
   ]);
 

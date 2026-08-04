@@ -98,7 +98,7 @@ test('real Claude askAgent preserves finalize when evidence assessments are pres
   assert.equal(decision.evidenceAssessments?.[0]?.qualityCategory, 'SILVER_STANDARD');
 });
 
-test('real Claude askAgent treats NEEDS_RADAR_SEARCH with shouldStop false as continue_search even without explicit search actions', async () => {
+test('real Claude askAgent does not invent a fallback search action from a continue judgment', async () => {
   const decision = await askRealClaudeDecision(
     {
       task: { topic: '绥化市科技招商政策' },
@@ -109,28 +109,16 @@ test('real Claude askAgent treats NEEDS_RADAR_SEARCH with shouldStop false as co
     },
     {
       callModel: async () => JSON.stringify({
-        status: 'NEEDS_RADAR_SEARCH',
-        stopDecision: {
-          shouldStop: false,
-          reason: '现有证据不足以支持停止，先扩大雷达搜索。',
-        },
-        finalJudgment: {
-          conclusion: '还没有拿到足够官方正文，需要继续搜索。',
-        },
+        status: 'CONTINUE',
+        judgment: '证据不足，需要先搜索官方政策页面。',
         uncertainties: ['尚未定位到官方正文页面。'],
       }),
     },
   );
 
-  assert.equal(decision.decision, 'continue_search');
-  assert.deepEqual(decision.searchActions, [
-    {
-      query: '官方政策页面',
-      why: '现有证据不足以支持停止，先扩大雷达搜索。',
-    },
-  ]);
-  assert.match(decision.reasoning, /扩大雷达搜索|继续搜索/);
-  assert.equal((decision.finalPackage as { status?: string } | undefined)?.status, 'NEEDS_RADAR_SEARCH');
+  assert.equal(decision.decision, 'stop');
+  assert.deepEqual(decision.searchActions, []);
+  assert.match(decision.reasoning, /证据不足/);
 });
 
 test('real Claude askAgent preserves dynamic camelCase nextActions radar-search queries instead of collapsing to fallback query', async () => {
@@ -323,7 +311,7 @@ test('real Claude askAgent preserves composite combinedActions search and fetch 
   assert.equal(decision.searchActions.some((action) => action.query === '官方政策页面'), false);
 });
 
-test('real Claude askAgent revives search actions from composite fetch contextQuery without injecting fallback query', async () => {
+test('real Claude askAgent preserves fetch intent instead of reviving a search from contextQuery', async () => {
   const decision = await askRealClaudeDecision(
     {
       task: { topic: '黑龙江高新企业研发补贴' },
@@ -348,20 +336,14 @@ test('real Claude askAgent revives search actions from composite fetch contextQu
     },
   );
 
-  assert.equal(decision.decision, 'continue_search');
-  assert.deepEqual(decision.searchActions, [
-    {
-      query: '黑龙江省科技厅',
-      why: '先抓黑龙江省科技厅命中的政策详情。',
-    },
-  ]);
+  assert.equal(decision.decision, 'continue_fetch');
+  assert.deepEqual(decision.searchActions, []);
   assert.deepEqual(decision.fetchActions, [
     {
       url: 'https://example.gov.cn/policy-2',
       why: '先抓黑龙江省科技厅命中的政策详情。',
     },
   ]);
-  assert.equal(decision.searchActions.some((action) => action.query === '官方政策页面'), false);
 });
 
 
@@ -407,7 +389,7 @@ test('real Claude askAgent treats continue plus need_fetch status and fetch-only
       why: '唯一强相关官方入口，应立即抓取正文证据。',
     },
   ]);
-  assert.equal((decision.finalPackage as { _raw_model_output?: string } | undefined)?._raw_model_output?.includes('https://www.hlj.gov.cn/'), true);
+  assert.equal((decision.finalPackage as { _raw_model_output?: string } | undefined)?._raw_model_output, undefined);
 });
 
 test('real Claude askAgent captures fetch alias actions such as visit_url fetch_page browse and read-url', async () => {
@@ -478,36 +460,26 @@ test('real Claude askAgent patches live-shape CONTINUE decision with type SEARCH
   assert.equal(decision.reasoning, 'Located the HEU 3+1 program specification successfully.');
 });
 
-test('real Claude askAgent preserves canonical continue_fetch fetchActions emitted by the prompt contract', async () => {
+test('real Claude askAgent keeps legacy fetch-only actions out of search even with context metadata', async () => {
   const decision = await askRealClaudeDecision(
     {
       task: { topic: '黑龙江高新企业研发补贴' },
-      discoveredCandidates: [
-        {
-          query: '黑龙江 高新技术企业 租金减免 2026',
-          title: 'hlj.gov.cn https://www.hlj.gov.cn',
-          url: 'https://www.hlj.gov.cn/',
-          snippet: '官方站点线索',
-          source: 'cloudflare-search-local',
-        },
-      ],
+      discoveredCandidates: [],
       fetchedEvidence: [],
       currentIteration: 2,
       uncertainties: [],
     },
     {
       callModel: async () => JSON.stringify({
-        decision: 'continue_fetch',
-        reasoning: 'Official candidate URLs are already available, so fetch them before more search.',
-        searchActions: [],
+        status: 'CONTINUE',
         fetchActions: [
           {
-            url: 'https://www.hlj.gov.cn/',
-            why: 'Copy the exact discovered official URL into the canonical fetchActions array.',
+            action: 'fetch',
+            url: 'https://example.gov.cn/policy-legacy',
+            contextQuery: '黑龙江省科技厅',
+            reason: '抓取模型已选定的官方详情页。',
           },
         ],
-        uncertainties: [],
-        discardedLeads: [],
       }),
     },
   );
@@ -516,8 +488,8 @@ test('real Claude askAgent preserves canonical continue_fetch fetchActions emitt
   assert.deepEqual(decision.searchActions, []);
   assert.deepEqual(decision.fetchActions, [
     {
-      url: 'https://www.hlj.gov.cn/',
-      why: 'Copy the exact discovered official URL into the canonical fetchActions array.',
+      url: 'https://example.gov.cn/policy-legacy',
+      why: '抓取模型已选定的官方详情页。',
     },
   ]);
 });

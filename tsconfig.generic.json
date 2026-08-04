@@ -1,0 +1,26 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": [
+    "src/agent/**/*.ts",
+    "src/app/create-generic-dependencies.ts",
+    "src/app/run-agent.ts",
+    "src/app/run-generic-agent.ts",
+    "src/app/run-manager.ts",
+    "src/adapters/http/**/*.ts",
+    "src/adapters/mcp/**/*.ts",
+    "src/artifacts/generic-report.ts",
+    "src/evidence/**/*.ts",
+    "src/fetch/**/*.ts",
+    "src/fetch-fusion/browser-fetch.ts",
+    "src/fetch-fusion/local-fetch-primary.ts",
+    "src/fetch-fusion/types.ts",
+    "src/llm/**/*.ts",
+    "src/search/auto/**/*.ts",
+    "src/search/provider.ts",
+    "src/types/**/*.d.ts"
+  ]
+}

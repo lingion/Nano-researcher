@@ -1,10 +1,10 @@
 # local-policy-agent
 
-一个独立的本地政策研究运行时，核心特点如下：
+一个独立的 AI 新品与访问资格雷达运行时，核心特点如下：
 
-- 基于 NanoClaw 风格的 live audit 编排内核
+- 基于 NanoClaw 风格的 live radar 编排内核
 - 默认 **MCP-first / MCP-only** 搜索与抓取后端
-- 由 prompt 驱动的证据判断与收敛控制
+- 由 prompt 驱动的新品、发布、内测、Waitlist 和资格证据判断
 - 最终以 `summarize_and_stop` 结束，而不是无限搜索
 
 英文文档见：
@@ -14,16 +14,14 @@
 
 ## 1. 项目用途
 
-这个仓库运行一个政策研究循环：
+这个仓库运行一个 AI 产品与访问资格雷达循环：
 
 1. 模型先决定当前应该 search、fetch、review 还是 summarize
-2. search 只负责发现候选 URL
+2. search 只负责发现产品页、公告、文档、开发者页面和申请入口
 3. fetch 只负责抓取页面正文证据
 4. 抓取后的证据会被分类为：`GOLD_STANDARD` / `SILVER_STANDARD` / `NOISE`
-5. 达到足够验证证据后，runtime 会进入两阶段收敛：
-   - `post_convergence_review`
-   - `final_summary`
-6. 最终输出为总结结果包，而不是继续搜索
+5. 模型区分产品是否存在与当前用户是否有资格访问
+6. 最终结果区分正式发布、公测、内测、Preview、Waitlist、邀请码、地区限制和申请路径
 
 ---
 
@@ -276,7 +274,7 @@ pnpm live-audit
 示例：
 
 ```bash
-LIVE_AUDIT_TOPIC='常州市 医疗补贴' \
+LIVE_AUDIT_TOPIC='最新 AI 模型、Agent、API、Beta/Preview、Waitlist 和内测资格' \
 LIVE_AUDIT_MAX_ITERATIONS=10 \
 POLICY_TARGET_VALIDATED_COUNT=4 \
 LIVE_AUDIT_DEBUG=1 \
@@ -316,7 +314,7 @@ pnpm live-audit
   - `post_convergence_review`
   - `final_summary`
   - `summarize_and_stop`
-- `常州市 医疗补贴` live audit 已能正常走到 `summarize_and_stop`
+- 最新 AI 新品与访问资格 live audit 已能走到 `summarize_and_stop`，并输出发布和资格证据
 - 不再卡在 premature `finalize`
 
 ---

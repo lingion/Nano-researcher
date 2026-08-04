@@ -12,7 +12,10 @@ import {
   type NanoclawRuntimeConfig,
 } from '../runtime/nanoclaw-bridge.ts';
 import type { DebugEvent } from '../runtime/ask-real-claude.ts';
-import { writeRunTranscript } from '../artifacts/write-run-transcript.ts';
+import { writeRunTranscript, writeTextFileAtomic } from '../artifacts/write-run-transcript.ts';
+import { summarizeError, safeSerializeDebugPayload, sanitizeDebugEvent, sanitizeDebugValue } from '../runtime/sanitize-debug.ts';
+import { normalizeFinalPackage, writeEarlyAccessReport } from '../artifacts/write-early-access-report.ts';
+import { withTimeout, isRetryableRuntimeError } from '../runtime/reliability.ts';
 
 export interface LiveAuditEnv {
   LIVE_AUDIT_TOPIC?: string;
@@ -25,13 +28,17 @@ export interface LiveAuditEnv {
   LIVE_AUDIT_ENABLE_BROWSER?: string;
   LIVE_AUDIT_MODEL_TIMEOUT_MS?: string;
   LIVE_AUDIT_HEARTBEAT_MS?: string;
-  LIVE_AUDIT_RUN_TIMEOUT_MS?: string;}
+  LIVE_AUDIT_RUN_TIMEOUT_MS?: string;
+  LIVE_AUDIT_PREFLIGHT_RETRY_ATTEMPTS?: string;
+  LIVE_AUDIT_PREFLIGHT_RETRY_DELAY_MS?: string;
+}
 
 export interface LiveAuditTransportProvenance {
   transport: 'nanoclaw';
   provider: NanoclawRuntimeConfig['provider'];
   providerMode: 'explicit' | 'inferred';
   model: string;
+  fallbackModel?: string;
   effectiveBaseURL: string;
   presentEnvKeys: string[];
   gateway: GatewayModelProbeResult;
@@ -46,8 +53,11 @@ export interface LiveAuditRuntime {
   targetHotspotCount: number;
   hotspotOnly: boolean;
   enableBrowser: boolean;
-  callModel: (prompt: string) => Promise<string>;
-  resolvePreflightProvenance: () => Promise<LiveAuditTransportProvenance>;
+  runTimeoutMs: number;
+  preflightRetryAttempts: number;
+  preflightRetryDelayMs?: number;
+  callModel: (prompt: string, signal?: AbortSignal) => Promise<string>;
+  resolvePreflightProvenance: (signal?: AbortSignal) => Promise<LiveAuditTransportProvenance>;
   onDebugEvent: (event: DebugEvent) => void;
   onShellDebugEvent: (event: DebugEvent) => void;
 }
@@ -106,22 +116,22 @@ function writeLiveAuditDebugTrace(
   writeRunTranscript.sync(debugTracePath, {
     task,
     events,
-  });
+  }, { mode: 'debug' });
   const latest = events.at(-1);
-  if (latest) appendFileSync(liveLogPath, `${new Date().toISOString()} ${JSON.stringify(latest)}\n`, 'utf8');
+  if (latest) appendFileSync(liveLogPath, `${new Date().toISOString()} ${safeSerializeDebugPayload(latest)}\n`, 'utf8');
   return debugTracePath;
 }
 
 function initializeLiveAuditLog(outputDir: string, topic: string): string {
   mkdirSync(outputDir, { recursive: true });
   const liveLogPath = path.join(outputDir, 'live.log');
-  appendFileSync(liveLogPath, `${new Date().toISOString()} ${JSON.stringify({ type: 'live_audit.start', payload: { topic } })}\n`, 'utf8');
+  appendFileSync(liveLogPath, `${new Date().toISOString()} ${safeSerializeDebugPayload({ type: 'live_audit.start', payload: { topic } })}\n`, 'utf8');
   return liveLogPath;
 }
 
 function reportShellDebugEvent(runtime: Pick<LiveAuditRuntime, 'onShellDebugEvent'>, event: DebugEvent): void {
   try {
-    runtime.onShellDebugEvent(event);
+    runtime.onShellDebugEvent(sanitizeDebugEvent(event));
   } catch {
     // Shell-side debug hooks are best-effort only and must not fail the runtime.
   }
@@ -147,20 +157,7 @@ function sanitizeBaseUrl(baseURL: string): string {
 }
 
 function serializeErrorPayload(error: unknown): Record<string, unknown> {
-  if (error instanceof Error) {
-    return {
-      name: error.name,
-      message: error.message,
-      stack: error.stack ?? null,
-      ...(error instanceof NanoclawEmptyResponseError
-        ? { diagnostics: error.diagnostics }
-        : {}),
-    };
-  }
-
-  return {
-    message: String(error),
-  };
+  return summarizeError(error);
 }
 
 function resolvePresentEnvKeys(env: LiveAuditEnv): string[] {
@@ -181,6 +178,7 @@ async function buildLiveAuditTransportProvenance(
         ? 'explicit'
         : 'inferred',
     model: config.model,
+    ...(config.fallbackModel && config.fallbackModel !== config.model ? { fallbackModel: config.fallbackModel } : {}),
     effectiveBaseURL: sanitizeBaseUrl(config.baseURL),
     presentEnvKeys: resolvePresentEnvKeys(env),
     gateway: await probeGatewayModels({ config }),
@@ -211,7 +209,7 @@ export function createLiveAuditRuntime(
   env: LiveAuditEnv = process.env,
   deps: {
     resolveConfig?: () => NanoclawRuntimeConfig;
-    callNanoclawModel?: (prompt: string, options?: { config?: NanoclawRuntimeConfig }) => Promise<string>;
+    callNanoclawModel?: (prompt: string, options?: { config?: NanoclawRuntimeConfig; signal?: AbortSignal }) => Promise<string>;
     probeGatewayModels?: (options?: { config?: NanoclawRuntimeConfig }) => Promise<GatewayModelProbeResult>;
     resolveDefaultOutputDir?: () => string;
     onDebugEvent?: (event: DebugEvent) => void;
@@ -224,6 +222,12 @@ export function createLiveAuditRuntime(
   const targetHotspotCount = parseLiveAuditTargetCount(env.LIVE_AUDIT_TARGET_COUNT);
   const hotspotOnly = parseLiveAuditBoolean(env.LIVE_AUDIT_HOTSPOT_ONLY, true);
   const enableBrowser = parseLiveAuditBoolean(env.LIVE_AUDIT_ENABLE_BROWSER, false);
+  const runTimeoutMs = Number(env.LIVE_AUDIT_RUN_TIMEOUT_MS ?? 0);
+  if (!Number.isFinite(runTimeoutMs) || runTimeoutMs < 0) throw new Error('LIVE_AUDIT_RUN_TIMEOUT_MS must be a non-negative finite number');
+  const preflightRetryAttempts = Number(env.LIVE_AUDIT_PREFLIGHT_RETRY_ATTEMPTS ?? 1);
+  if (!Number.isInteger(preflightRetryAttempts) || preflightRetryAttempts < 0) throw new Error('LIVE_AUDIT_PREFLIGHT_RETRY_ATTEMPTS must be a non-negative integer');
+  const preflightRetryDelayMs = Number(env.LIVE_AUDIT_PREFLIGHT_RETRY_DELAY_MS ?? 200);
+  if (!Number.isFinite(preflightRetryDelayMs) || preflightRetryDelayMs < 0) throw new Error('LIVE_AUDIT_PREFLIGHT_RETRY_DELAY_MS must be a non-negative finite number');
   if (fromDate > toDate) throw new Error('LIVE_AUDIT_FROM must be on or before LIVE_AUDIT_TO');
   const outputDir = env.LIVE_AUDIT_OUTPUT_DIR ?? (deps.resolveDefaultOutputDir ?? resolveDefaultLiveAuditOutputDir)();
   const forwardShellDebugEvent = deps.onDebugEvent ?? (() => {});
@@ -240,11 +244,14 @@ export function createLiveAuditRuntime(
     targetHotspotCount,
     hotspotOnly,
     enableBrowser,
-    callModel: async (prompt: string) => {
+    runTimeoutMs,
+    preflightRetryAttempts,
+    preflightRetryDelayMs,
+    callModel: async (prompt: string, signal?: AbortSignal) => {
       resolvedConfig ??= resolveConfig();
-      return await (deps.callNanoclawModel ?? callNanoclawModel)(prompt, { config: resolvedConfig, onDebugEvent: forwardShellDebugEvent });
+      return await (deps.callNanoclawModel ?? callNanoclawModel)(prompt, { config: resolvedConfig, signal, onDebugEvent: forwardShellDebugEvent });
     },
-    resolvePreflightProvenance: async () => {
+    resolvePreflightProvenance: async (_signal?: AbortSignal) => {
       resolvedConfig ??= resolveConfig();
       return await buildLiveAuditTransportProvenance(resolvedConfig, env, probeGatewayModels);
     },
@@ -308,76 +315,83 @@ export function shouldBypassEmptyResponse(diagnostics: unknown): boolean {
   return hasMessageSkeleton && hasChoicesKey;
 }
 
-export async function runLiveAuditPreflight(runtime: LiveAuditRuntime): Promise<void> {
+function waitForPreflightRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (delayMs <= 0) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'));
+      return;
+    }
+    const timer = setTimeout(resolve, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new DOMException('The operation was aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+export async function runLiveAuditPreflight(runtime: LiveAuditRuntime, signal?: AbortSignal): Promise<void> {
+  const retryAttempts = runtime.preflightRetryAttempts ?? 0;
+  const retryDelay = runtime.preflightRetryDelayMs ?? 200;
   runtime.onDebugEvent({
     type: 'live_audit.preflight.start',
     payload: {
       topic: runtime.topic,
       maxIterations: runtime.maxIterations,
+      ...(retryAttempts > 0 ? { retryAttempts } : {}),
     },
   });
 
-  try {
-    runtime.onDebugEvent({
-      type: 'live_audit.preflight.provenance',
-      payload: {
-        topic: runtime.topic,
-        maxIterations: runtime.maxIterations,
-        ...(await runtime.resolvePreflightProvenance()),
-      },
-    });
-
-    await runtime.callModel(LIVE_AUDIT_PREFLIGHT_PROMPT);
-  } catch (error) {
-    if (error instanceof NanoclawEmptyResponseError && shouldBypassEmptyResponse(error.diagnostics)) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retryAttempts; attempt += 1) {
+    if (signal?.aborted) throw signal.reason ?? new DOMException('The operation was aborted', 'AbortError');
+    try {
       runtime.onDebugEvent({
-        type: 'live_audit.preflight.warning',
-        payload: {
-          topic: runtime.topic,
-          maxIterations: runtime.maxIterations,
-          message: 'Structurally valid empty preflight response; bypassing strict text requirement.',
-          diagnostics: error.diagnostics,
-        },
+        type: 'live_audit.preflight.provenance',
+        payload: { topic: runtime.topic, maxIterations: runtime.maxIterations, ...(attempt > 0 ? { attempt: attempt + 1 } : {}), ...(await runtime.resolvePreflightProvenance(signal)) },
       });
+      await runtime.callModel(LIVE_AUDIT_PREFLIGHT_PROMPT, signal);
+      runtime.onDebugEvent({ type: 'live_audit.preflight.ok', payload: { topic: runtime.topic, maxIterations: runtime.maxIterations, ...(attempt > 0 ? { attempt: attempt + 1 } : {}) } });
       return;
+    } catch (error) {
+      if (error instanceof NanoclawEmptyResponseError && shouldBypassEmptyResponse(error.diagnostics)) {
+        runtime.onDebugEvent({ type: 'live_audit.preflight.warning', payload: { topic: runtime.topic, maxIterations: runtime.maxIterations, bypassedEmptyResponse: true } });
+        return;
+      }
+      lastError = error;
+      const retryable = isRetryableRuntimeError(error);
+      const hasRetry = retryable && attempt < retryAttempts;
+      if (!hasRetry) break;
+      const delayMs = retryDelay + Math.max(0, attempt * retryDelay);
+      runtime.onDebugEvent({ type: 'live_audit.preflight.retry', payload: { topic: runtime.topic, maxIterations: runtime.maxIterations, attempt: attempt + 1, nextAttempt: attempt + 2, delayMs, error: serializeErrorPayload(error) } });
+      await waitForPreflightRetry(delayMs, signal);
     }
-
-    const preflightError = new Error(
-      `Live audit preflight failed before entering runPolicyTaskLoop: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    emitFailureDebugEventSafely(
-      runtime,
-      {
-        type: 'live_audit.preflight.error',
-        payload: {
-          topic: runtime.topic,
-          maxIterations: runtime.maxIterations,
-          message: error instanceof Error ? error.message : String(error),
-          ...(error instanceof NanoclawEmptyResponseError
-            ? { diagnostics: error.diagnostics }
-            : {}),
-        },
-      },
-      preflightError,
-    );
-    throw preflightError;
   }
 
-  runtime.onDebugEvent({
-    type: 'live_audit.preflight.ok',
-    payload: {
-      topic: runtime.topic,
-      maxIterations: runtime.maxIterations,
-    },
-  });
+  const message = lastError instanceof Error ? lastError.message : String(lastError);
+  const preflightError = new Error(`Live audit preflight failed before entering runPolicyTaskLoop: ${message}`);
+  emitFailureDebugEventSafely(runtime, { type: 'live_audit.preflight.error', payload: { topic: runtime.topic, maxIterations: runtime.maxIterations, error: serializeErrorPayload(lastError) } }, preflightError);
+  throw preflightError;
 }
+
+type LiveAuditReportMetadata = {
+  status: 'complete' | 'incomplete' | 'failed';
+  executionStatus: 'complete' | 'bounded_interruption' | 'failed';
+  businessAcceptance: 'PASS' | 'CONDITIONAL_PASS' | 'FAIL';
+  validatedEarlyAccessItems: number;
+  reportedEarlyAccessItems: number;
+  earlyAccessTarget: number;
+  earlyAccessShortfall: number;
+  earlyAccessReportPath: string;
+};
 
 export async function runLiveAudit(
   runtime: LiveAuditRuntime,
   deps: {
     runPolicyTaskLoop?: typeof runPolicyTaskLoop;
   } = {},
-): Promise<Awaited<ReturnType<typeof runPolicyTaskLoop>> & { debugTracePath: string }> {
+): Promise<Awaited<ReturnType<typeof runPolicyTaskLoop>> & LiveAuditReportMetadata & { debugTracePath: string }> {
   const debugEvents: DebugEvent[] = [];
   initializeLiveAuditLog(runtime.outputDir, runtime.topic);  let debugTracePath = path.join(runtime.outputDir, 'debug-trace.json');
 
@@ -388,23 +402,56 @@ export async function runLiveAudit(
   };
 
   let debugTraceWriteFailed = false;
+  let rawModelOutputSequence = 0;
+
+  const persistRawModelOutput = async (rawText: string): Promise<void> => {
+    rawModelOutputSequence += 1;
+    const fileName = `model-raw-${String(rawModelOutputSequence).padStart(4, '0')}.txt`;
+    const filePath = path.join(runtime.outputDir, fileName);
+    try {
+      mkdirSync(runtime.outputDir, { recursive: true });
+      await writeTextFileAtomic(filePath, rawText);
+      writeDebugEventSafely({
+        type: 'model.raw_output.persisted',
+        payload: { fileName, rawTextLength: rawText.length },
+      });
+    } catch (error) {
+      writeDebugEventSafely({
+        type: 'model.raw_output.persistence_error',
+        payload: { fileName, rawTextLength: rawText.length, error: serializeErrorPayload(error) },
+      });
+    }
+  };
 
   const writeDebugEventSafely = (event: DebugEvent) => {
+    const safeEvent = sanitizeDebugEvent(event);
     if (debugTraceWriteFailed) {
-      reportShellDebugEvent(runtime, event);
+      reportShellDebugEvent(runtime, safeEvent);
       return;
     }
 
     try {
-      forwardDebugEvent(event);
+      forwardDebugEvent(safeEvent);
     } catch (error) {
       debugTraceWriteFailed = true;
-      throw error;
+      reportShellDebugEvent(runtime, {
+        type: 'debug_trace.write_error',
+        payload: {
+          tracePath: path.join(runtime.outputDir, 'debug-trace.json'),
+          failedEventType: safeEvent.type,
+          originalError: safeEvent.type === 'run.failure'
+            ? sanitizeDebugValue(safeEvent.payload)
+            : undefined,
+          traceWriteError: serializeErrorPayload(error),
+        },
+      });
+      reportShellDebugEvent(runtime, safeEvent);
     }
   };
 
   const runStartedAt = Date.now();
-  try {
+  const runOperation = async (signal: AbortSignal) => {
+    if (signal.aborted) throw signal.reason ?? new DOMException('The operation was aborted', 'AbortError');
     const instrumentedCallModel = async (prompt: string): Promise<string> => {
       const startedAt = Date.now();
       const stage = 'model';
@@ -414,7 +461,7 @@ export async function runLiveAudit(
         ? setInterval(() => writeDebugEventSafely({ type: 'stage.heartbeat', payload: { stage, startedAt: new Date(startedAt).toISOString(), elapsedMs: Date.now() - startedAt } }), heartbeatMs)
         : undefined;
       try {
-        const result = await runtime.callModel(prompt);
+        const result = await runtime.callModel(prompt, signal);
         writeDebugEventSafely({ type: 'stage.end', payload: { stage, startedAt: new Date(startedAt).toISOString(), completedAt: new Date().toISOString(), durationMs: Date.now() - startedAt } });
         return result;
       } catch (error) {
@@ -429,7 +476,7 @@ export async function runLiveAudit(
       ...runtime,
       callModel: instrumentedCallModel,
       onDebugEvent: writeDebugEventSafely,
-    });
+    }, signal);
 
     const result = await (deps.runPolicyTaskLoop ?? runPolicyTaskLoop)(
       { topic: runtime.topic },
@@ -441,12 +488,35 @@ export async function runLiveAudit(
         enableBrowser: runtime.enableBrowser,
         callModel: instrumentedCallModel,
         onDebugEvent: writeDebugEventSafely,
+        onRawModelOutput: persistRawModelOutput,
+        signal,
       },
     );
 
     const completedAt = new Date().toISOString();
+    const earlyAccessItems = normalizeFinalPackage(result.decision.finalPackage);
+    const earlyAccessReport = writeEarlyAccessReport({
+      target: runtime.targetHotspotCount,
+      items: earlyAccessItems,
+    });
+    writeFileSync(path.join(runtime.outputDir, 'early-access-report.md'), earlyAccessReport.markdown);
+    const terminalDecision = result.decision.decision === 'finalize'
+      || result.decision.decision === 'stop'
+      || result.decision.decision === 'summarize_and_stop';
+    const businessAcceptance = terminalDecision
+      && earlyAccessReport.shortfall === 0
+      ? 'PASS'
+      : result.loop_interrupted_by_gate
+        ? 'FAIL'
+        : terminalDecision && earlyAccessReport.validCount > 0
+          ? 'CONDITIONAL_PASS'
+          : 'FAIL';
+    const executionStatus = result.loop_interrupted_by_gate ? 'bounded_interruption' : 'complete';
+    const status = businessAcceptance === 'PASS' && executionStatus === 'complete' ? 'complete' : 'incomplete';
     const summary = {
-      status: 'complete',
+      status,
+      executionStatus,
+      businessAcceptance,
       startedAt: new Date(runStartedAt).toISOString(),
       completedAt,
       durationMs: Date.now() - runStartedAt,
@@ -454,10 +524,30 @@ export async function runLiveAudit(
       decision: result.decision.decision,
       discoveredCandidates: result.discoveredCandidates.length,
       fetchedEvidence: result.fetchedEvidence.length,
+      validatedEarlyAccessItems: earlyAccessReport.validCount,
+      reportedEarlyAccessItems: earlyAccessReport.validCount,
+      earlyAccessTarget: earlyAccessReport.target,
+      earlyAccessShortfall: earlyAccessReport.shortfall,
+      earlyAccessReportPath: path.join(runtime.outputDir, 'early-access-report.md'),
     };
     writeFileSync(path.join(runtime.outputDir, 'run-summary.json'), JSON.stringify(summary, null, 2));
     writeDebugEventSafely({ type: 'run.complete', payload: summary });
-    return { ...result, debugTracePath };
+    return {
+      ...result,
+      debugTracePath,
+      status,
+      executionStatus,
+      businessAcceptance,
+      validatedEarlyAccessItems: earlyAccessReport.validCount,
+      reportedEarlyAccessItems: earlyAccessReport.validCount,
+      earlyAccessTarget: earlyAccessReport.target,
+      earlyAccessShortfall: earlyAccessReport.shortfall,
+      earlyAccessReportPath: path.join(runtime.outputDir, 'early-access-report.md'),
+    };
+  };
+
+  try {
+    return await withTimeout((signal) => runOperation(signal), runtime.runTimeoutMs, 'live-audit:run');
   } catch (error) {
     emitFailureDebugEventSafely(
       {
@@ -466,7 +556,7 @@ export async function runLiveAudit(
         outputDir: runtime.outputDir,
       },
       {
-        type: 'run.failure',
+        type: error instanceof Error && error.name === 'RuntimeTimeoutError' ? 'live_audit.run.timeout' : 'run.failure',
         payload: { ...serializeErrorPayload(error), startedAt: new Date(runStartedAt).toISOString(), completedAt: new Date().toISOString(), durationMs: Date.now() - runStartedAt },
       },
       error,

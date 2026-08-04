@@ -49,7 +49,7 @@ function modelInstructionsFor(input: { tier: CandidateTier; derivativeLike: bool
   }
 
   if (input.derivativeLike) {
-    instructions.push('This candidate looks like a derivative or explanatory page; do not treat it as final official policy text without stronger evidence.');
+    instructions.push('This candidate looks like a derivative or explanatory page; do not treat it as final access or eligibility evidence without stronger official product or application evidence.');
   }
 
   return instructions;

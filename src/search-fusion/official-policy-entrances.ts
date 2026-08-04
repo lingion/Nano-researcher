@@ -25,7 +25,7 @@ interface TextResponseLike {
 }
 
 interface EntranceFetchOptions {
-  fetchImpl?: (url: string, init?: { headers?: Record<string, string>; method?: string; body?: string }) => Promise<TextResponseLike>;
+  fetchImpl?: (url: string, init?: { headers?: Record<string, string>; method?: string; body?: string; signal?: AbortSignal }) => Promise<TextResponseLike>;
 }
 
 function collectSnippetParts(part: unknown): string[] {
@@ -56,8 +56,8 @@ function absolutizeUrl(url: string, base: string): string {
   return new URL(url, base).toString();
 }
 
-export function createNdrcPolicySearchProvider(options: EntranceFetchOptions): (query: string) => Promise<SearchDiscoveryRecord[]> {
-  return async (query: string) => {
+export function createNdrcPolicySearchProvider(options: EntranceFetchOptions): (query: string, signal?: AbortSignal) => Promise<SearchDiscoveryRecord[]> {
+  return async (query: string, signal?: AbortSignal) => {
     if (typeof options.fetchImpl !== 'function') {
       throw new Error('NDRC provider requires fetchImpl.');
     }
@@ -81,6 +81,7 @@ export function createNdrcPolicySearchProvider(options: EntranceFetchOptions): (
         accept: 'application/json,text/plain,*/*',
         referer: `https://www.ndrc.gov.cn/xxgk/wjk/index.html?tab=all&qt=${encodeURIComponent(query)}`,
       },
+      signal,
     });
 
     const payload = JSON.parse(await response.text()) as {
@@ -99,8 +100,8 @@ export function createNdrcPolicySearchProvider(options: EntranceFetchOptions): (
   };
 }
 
-export function createMiitPolicySearchProvider(options: EntranceFetchOptions): (query: string) => Promise<SearchDiscoveryRecord[]> {
-  return async (query: string) => {
+export function createMiitPolicySearchProvider(options: EntranceFetchOptions): (query: string, signal?: AbortSignal) => Promise<SearchDiscoveryRecord[]> {
+  return async (query: string, signal?: AbortSignal) => {
     if (typeof options.fetchImpl !== 'function') {
       throw new Error('MIIT provider requires fetchImpl.');
     }
@@ -133,6 +134,7 @@ export function createMiitPolicySearchProvider(options: EntranceFetchOptions): (
         accept: 'application/json,text/plain,*/*',
         referer: `https://www.miit.gov.cn/search/?websiteid=110000000000000&q=${encodeURIComponent(query)}`,
       },
+      signal,
     });
 
     const payload = JSON.parse(await response.text()) as {
@@ -166,8 +168,8 @@ export function createMiitPolicySearchProvider(options: EntranceFetchOptions): (
   };
 }
 
-export function createGovCnPolicyLibraryProvider(options: EntranceFetchOptions): (query: string) => Promise<SearchDiscoveryRecord[]> {
-  return async (query: string) => {
+export function createGovCnPolicyLibraryProvider(options: EntranceFetchOptions): (query: string, signal?: AbortSignal) => Promise<SearchDiscoveryRecord[]> {
+  return async (query: string, signal?: AbortSignal) => {
     if (typeof options.fetchImpl !== 'function') {
       throw new Error('gov.cn provider requires fetchImpl.');
     }
@@ -203,6 +205,7 @@ export function createGovCnPolicyLibraryProvider(options: EntranceFetchOptions):
           athenaAppKey: 'Qpu2aqbLGFQobXIa%2FSsLKHdZONHDx983JQ1FbjIsNbQZVq0JvOgqLo1utbIX%2Bq6lG9yxHXXLljvVBCGD7cwlCkXz3FPifE7n6xBuuJHA%2BQIerhvyL4zifYOYFWz3aoweOfx%2BDGJTF0q54dWzzQVAWxG4N0POYQNBTihkSsmODp4%3D',
           athenaAppName: '%E5%9B%BD%E7%BD%91%E6%90%9C%E7%B4%A2',
         },
+        signal,
       },
     );
 

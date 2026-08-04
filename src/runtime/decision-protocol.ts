@@ -41,6 +41,16 @@ export interface FailedDecisionEnvelope {
 
 export type DecisionParseResult = DecisionEnvelope | FailedDecisionEnvelope;
 
+export class ProtocolDecisionError extends Error {
+  readonly protocolError: ProtocolError;
+
+  constructor(protocolError: ProtocolError) {
+    super(protocolError.message);
+    this.name = 'ProtocolDecisionError';
+    this.protocolError = protocolError;
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -75,6 +85,32 @@ function parseActions<T extends AgentSearchAction | AgentFetchAction>(
   });
 }
 
+function isValidEvidenceAssessment(value: unknown): value is NonNullable<PolicyAgentDecision['evidenceAssessments']>[number] {
+  if (!isRecord(value)) return false;
+  const url = stringField(value.url);
+  const qualityCategory = value.qualityCategory;
+  const validationReason = stringField(value.validationReason);
+  if (!url || !validationReason) return false;
+  try {
+    new URL(url);
+  } catch {
+    return false;
+  }
+  return qualityCategory === 'GOLD_STANDARD'
+    || qualityCategory === 'SILVER_STANDARD'
+    || qualityCategory === 'NOISE';
+}
+
+function resolveFinalPackage(parsed: Record<string, unknown>): unknown {
+  if (Object.prototype.hasOwnProperty.call(parsed, 'final_package')) return parsed.final_package;
+  if (Object.prototype.hasOwnProperty.call(parsed, 'finalPackage')) return parsed.finalPackage;
+  return undefined;
+}
+
+function hasFinalPackage(value: unknown): boolean {
+  return Array.isArray(value) || isRecord(value);
+}
+
 export function parseDecisionEnvelope(raw: string): DecisionParseResult {
   let parsed: unknown;
   try {
@@ -104,20 +140,67 @@ export function parseDecisionEnvelope(raw: string): DecisionParseResult {
   const actionErrors: ProtocolError[] = [];
   const searchActions = parseActions<AgentSearchAction>(parsed.searchActions, 'search', actionErrors);
   const fetchActions = parseActions<AgentFetchAction>(parsed.fetchActions, 'fetch', actionErrors);
+  const evidenceAssessments = parsed.evidenceAssessments === undefined
+    ? []
+    : Array.isArray(parsed.evidenceAssessments)
+      ? parsed.evidenceAssessments.filter(isValidEvidenceAssessment)
+      : null;
+  if (evidenceAssessments === null || (Array.isArray(parsed.evidenceAssessments)
+    && evidenceAssessments.length !== parsed.evidenceAssessments.length)) {
+    return {
+      ok: false,
+      error: {
+        scope: 'action',
+        code: 'INVALID_ACTION',
+        message: 'evidenceAssessments contains an invalid assessment',
+      },
+    };
+  }
+  const finalPackage = resolveFinalPackage(parsed);
+  const terminalDecision = ['finalize', 'stop', 'summarize_and_stop'].includes(decisionValue);
   const result: PolicyAgentDecision = {
     ...parsed,
     decision: decisionValue as PolicyAgentDecision['decision'],
     reasoning: typeof parsed.reasoning === 'string' ? parsed.reasoning : '',
     searchActions,
     fetchActions,
-    evidenceAssessments: Array.isArray(parsed.evidenceAssessments) ? parsed.evidenceAssessments as PolicyAgentDecision['evidenceAssessments'] : [],
-    finalPackage: Object.prototype.hasOwnProperty.call(parsed, 'final_package') ? parsed.final_package : undefined,
+    evidenceAssessments,
+    finalPackage,
     uncertainties: Array.isArray(parsed.uncertainties) ? parsed.uncertainties.filter((item): item is string => typeof item === 'string') : [],
     discardedLeads: Array.isArray(parsed.discardedLeads) ? parsed.discardedLeads.filter((item): item is string => typeof item === 'string') : [],
   };
 
-  const decision = result;
-  if (actionErrors.length > 0) decision.protocolErrors = actionErrors as unknown as Array<Record<string, unknown>>;
+  if (actionErrors.length > 0) {
+    return { ok: false, error: actionErrors[0] };
+  }
 
-  return actionErrors.length > 0 ? { ok: true, decision, envelope: parsed, actionErrors } : { ok: true, decision, envelope: parsed };
+  const actionCount = searchActions.length + fetchActions.length;
+  const invalidCombination =
+    (decisionValue === 'continue_search' && fetchActions.length > 0) ||
+    (decisionValue === 'continue_fetch' && searchActions.length > 0) ||
+    (['finalize', 'stop', 'summarize_and_stop'] as string[]).includes(decisionValue) && actionCount > 0;
+  if (invalidCombination) {
+    return {
+      ok: false,
+      error: {
+        scope: 'decision',
+        code: 'INVALID_ACTIONS',
+        message: `Decision ${decisionValue} is inconsistent with supplied actions`,
+      },
+    };
+  }
+
+  if (terminalDecision && !hasFinalPackage(finalPackage)) {
+    return {
+      ok: false,
+      error: {
+        scope: 'envelope',
+        code: 'INVALID_ENVELOPE',
+        message: `Decision ${decisionValue} requires a final package`,
+      },
+    };
+  }
+
+  const decision = result;
+  return { ok: true, decision, envelope: parsed };
 }

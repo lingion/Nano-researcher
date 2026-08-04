@@ -61,6 +61,6 @@ export async function handleJsonRpc(message, context, { serverName, serverVersio
         return rpcError(id, -32601, `method not found: ${message.method}`);
     }
   } catch (error) {
-    return rpcError(id, -32000, error?.message || 'internal error');
+    return rpcError(id, -32000, 'internal error');
   }
 }

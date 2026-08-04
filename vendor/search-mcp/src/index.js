@@ -628,7 +628,7 @@ async function handleJsonRpc(message, request, requestProviderConfig) {
         return rpcError(id, -32601, `method not found: ${message.method}`);
     }
   } catch (error) {
-    return rpcError(id, -32e3, error?.message || "internal error");
+    return rpcError(id, -32e3, "internal error");
   }
 }
 __name(handleJsonRpc, "handleJsonRpc");
@@ -1389,9 +1389,9 @@ async function runSearchAutoCategoryBundle(args, category) {
         attempts.push({
           engine,
           ok: false,
-          error: error?.message || "failed",
+          error: safeProviderError(error),
           quality_status: "red",
-          quality_reason: error?.message || "failed",
+          quality_reason: "provider_error",
           filtered_count: 0,
           result_count: 0,
           category_bundle: category,
@@ -1729,7 +1729,7 @@ export function setSearchAutoRunnerForTests(runner) {
 export function resetSearchAutoRunnerForTests() {
   searchAutoRunnerForTests = null;
 }
-async function runSearchAutoForCall(args) {
+export async function runSearchAutoForCall(args) {
   return await (searchAutoRunnerForTests || searchAuto)(args);
 }
 async function searchAuto(args) {
@@ -1782,7 +1782,7 @@ async function searchAuto(args) {
         });
       }
     } catch (error) {
-      attempts.push({ engine, ok: false, error: error?.message || "failed", quality_status: "red", quality_reason: error?.message || "failed", filtered_count: 0, result_count: 0 });
+      attempts.push({ engine, ok: false, error: safeProviderError(error), quality_status: "red", quality_reason: "provider_error", filtered_count: 0, result_count: 0 });
     }
   }
   const final = buildSearchAutoResponse({ args, engines, attempts, acceptedResults, siteTarget });
@@ -1856,7 +1856,7 @@ async function searchDuckDuckGo(args) {
       }
       bestFailure = searchResult({ source: "duckduckgo", query, limit, results: [], region, fetch_path: fetchPath, fetch_attempts: fetchAttempts });
     } catch (error) {
-      fetchAttempts.push({ path: safeHostname(attempt.url), blocked: false, block_reason: "", error: error?.message || "failed" });
+      fetchAttempts.push({ path: safeHostname(attempt.url), blocked: false, block_reason: "", error: safeProviderError(error) });
       bestFailure = {
         ok: false,
         source: "duckduckgo",
@@ -1864,7 +1864,7 @@ async function searchDuckDuckGo(args) {
         limit,
         results: [],
         region,
-        error: error?.message || "failed",
+        error: safeProviderError(error),
         fetch_path: safeHostname(attempt.url),
         fetch_attempts: fetchAttempts
       };
@@ -2332,7 +2332,7 @@ async function search360(args) {
     }
     return searchResult({ source: "360", query, limit, results, blocked: false, block_reason: "", fetch_path: safeHostname(response.url) || "www.so.com" });
   } catch (error) {
-    return searchError("360", query, limit, error?.message || "failed");
+    return searchError("360", query, limit, error);
   }
 }
 __name(search360, "search360");
@@ -2404,7 +2404,7 @@ async function searchBrave(args) {
     if (!results.length) results = extractGenericLinks(text, limit, "https://search.brave.com");
     return searchResult({ source: "brave", query, limit, results, fetch_path: fetchPath });
   } catch (error) {
-    return { ok: false, source: "brave", query, limit, results: [], error: error?.message || "failed" };
+    return { ok: false, source: "brave", query, limit, results: [], error: safeProviderError(error) };
   }
 }
 __name(searchBrave, "searchBrave");
@@ -2421,7 +2421,7 @@ async function searchQwant(args) {
     let results = extractGenericLinks(text, limit, "https://www.qwant.com");
     return searchResult({ source: "qwant", query, limit, results, fetch_path: fetchPath });
   } catch (error) {
-    return { ok: false, source: "qwant", query, limit, results: [], error: error?.message || "failed" };
+    return { ok: false, source: "qwant", query, limit, results: [], error: safeProviderError(error) };
   }
 }
 __name(searchQwant, "searchQwant");
@@ -2449,7 +2449,7 @@ async function searchEcosia(args) {
     if (!results.length) results = extractGenericLinks(text, limit, "https://www.ecosia.org");
     return searchResult({ source: "ecosia", query, limit, results, fetch_path: fetchPath });
   } catch (error) {
-    return { ok: false, source: "ecosia", query, limit, results: [], error: error?.message || "failed" };
+    return { ok: false, source: "ecosia", query, limit, results: [], error: safeProviderError(error) };
   }
 }
 __name(searchEcosia, "searchEcosia");
@@ -2520,7 +2520,7 @@ async function searchArxiv(args) {
     if (fallback?.ok) {
       return fallback;
     }
-    return searchResult({ source: "arxiv", query, limit, results: [], error: e?.message || "failed", fetch_path: "export.arxiv.org" });
+    return searchResult({ source: "arxiv", query, limit, results: [], error: safeProviderError(e), fetch_path: "export.arxiv.org" });
   }
 }
 __name(searchArxiv, "searchArxiv");
@@ -2545,7 +2545,7 @@ async function searchPubmed(args) {
     }
     return searchResult({ source: "pubmed", query, limit, results });
   } catch (e) {
-    return searchResult({ source: "pubmed", query, limit, results: [], error: e?.message || "failed" });
+    return searchResult({ source: "pubmed", query, limit, results: [], error: safeProviderError(e) });
   }
 }
 __name(searchPubmed, "searchPubmed");
@@ -2567,7 +2567,7 @@ async function searchHackerNews(args) {
     }
     return searchResult({ source: "hackernews", query, limit, results });
   } catch (e) {
-    return searchResult({ source: "hackernews", query, limit, results: [], error: e?.message || "failed" });
+    return searchResult({ source: "hackernews", query, limit, results: [], error: safeProviderError(e) });
   }
 }
 __name(searchHackerNews, "searchHackerNews");
@@ -2775,7 +2775,7 @@ async function searchStackOverflow(args) {
     }
     return finalizeVerticalSearchResults({ source: "stackoverflow", query, limit, results, site });
   } catch (e) {
-    return searchResult({ source: "stackoverflow", query, limit, results: [], error: e?.message || "failed" });
+    return searchResult({ source: "stackoverflow", query, limit, results: [], error: safeProviderError(e) });
   }
 }
 __name(searchStackOverflow, "searchStackOverflow");
@@ -2905,7 +2905,7 @@ async function searchNpm(args) {
     }
     return searchResult({ source: "npm", query, limit, results });
   } catch (e) {
-    return searchResult({ source: "npm", query, limit, results: [], error: e?.message || "failed" });
+    return searchResult({ source: "npm", query, limit, results: [], error: safeProviderError(e) });
   }
 }
 __name(searchNpm, "searchNpm");
@@ -3060,7 +3060,7 @@ async function searchMastodon(args) {
     }
     return searchResult({ source: "mastodon", query, limit, results });
   } catch (e) {
-    return searchResult({ source: "mastodon", query, limit, results: [], error: e?.message || "failed" });
+    return searchResult({ source: "mastodon", query, limit, results: [], error: safeProviderError(e) });
   }
 }
 __name(searchMastodon, "searchMastodon");
@@ -3077,7 +3077,7 @@ async function searchPeerTube(args) {
     }
     return searchResult({ source: "peertube", query, limit, results });
   } catch (e) {
-    return searchResult({ source: "peertube", query, limit, results: [], error: e?.message || "failed" });
+    return searchResult({ source: "peertube", query, limit, results: [], error: safeProviderError(e) });
   }
 }
 __name(searchPeerTube, "searchPeerTube");
@@ -3112,7 +3112,7 @@ async function searchBbc(args) {
     }
     return finalizeVerticalSearchResults({ source: "bbc", query, limit, results });
   } catch (e) {
-    return searchResult({ source: "bbc", query, limit, results: [], error: e?.message || "failed" });
+    return searchResult({ source: "bbc", query, limit, results: [], error: safeProviderError(e) });
   }
 }
 __name(searchBbc, "searchBbc");
@@ -3137,7 +3137,7 @@ async function searchBingNews(args) {
     }
     return finalizeVerticalSearchResults({ source: "bing_news", query, limit, results });
   } catch (e) {
-    return searchResult({ source: "bing_news", query, limit, results: [], error: e?.message || "failed" });
+    return searchResult({ source: "bing_news", query, limit, results: [], error: safeProviderError(e) });
   }
 }
 __name(searchBingNews, "searchBingNews");
@@ -3341,7 +3341,7 @@ async function searchSecEdgar(args) {
     if (!results.length) results = extractGenericLinks(text, limit, "https://www.sec.gov");
     return searchResult({ source: "sec_edgar", query, limit, results });
   } catch (e) {
-    return searchResult({ source: "sec_edgar", query, limit, results: [], error: e?.message || "failed" });
+    return searchResult({ source: "sec_edgar", query, limit, results: [], error: safeProviderError(e) });
   }
 }
 __name(searchSecEdgar, "searchSecEdgar");
@@ -3391,7 +3391,7 @@ async function searchLemmy(args) {
     }
     return searchResult({ source: "lemmy", query, limit, results });
   } catch (e) {
-    return searchResult({ source: "lemmy", query, limit, results: [], error: e?.message || "failed" });
+    return searchResult({ source: "lemmy", query, limit, results: [], error: safeProviderError(e) });
   }
 }
 __name(searchLemmy, "searchLemmy");
@@ -3428,7 +3428,7 @@ async function searchCrates(args) {
     }
     return searchResult({ source: "crates", query, limit, results });
   } catch (e) {
-    return searchResult({ source: "crates", query, limit, results: [], error: e?.message || "failed" });
+    return searchResult({ source: "crates", query, limit, results: [], error: safeProviderError(e) });
   }
 }
 __name(searchCrates, "searchCrates");
@@ -3519,7 +3519,7 @@ async function findRss(args) {
     }
     return searchResult({ source: "rss_finder", query: url, limit: feeds.length, results: feeds });
   } catch (e) {
-    return searchResult({ source: "rss_finder", query: url, limit: 0, results: [], error: e?.message || "failed" });
+    return searchResult({ source: "rss_finder", query: url, limit: 0, results: [], error: safeProviderError(e) });
   }
 }
 __name(findRss, "findRss");
@@ -3914,7 +3914,7 @@ async function searchOpenLibraryPrimary(query, limit) {
       return {
         ok: false,
         results: [],
-        error: htmlError?.message || jsonError?.message || "failed",
+        error: safeProviderError(htmlError || jsonError),
         fetch_path: "openlibrary.org",
         strategy: "primary-json",
         fallback_used: false,
@@ -4261,7 +4261,7 @@ async function fetchMetadata(args) {
       title: "",
       description: "",
       canonical: "",
-      error: message
+      error: safeProviderError(error)
     };
   }
 }
@@ -4328,13 +4328,25 @@ function parseLenientJsonObject(text) {
     return null;
   }
 }
+function assertSafeNetworkTarget(url) {
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("blocked unsafe network target: only http(s) URLs are allowed");
+  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const ipv4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
+  const parts = ipv4 ? ipv4.slice(1).map(Number) : null;
+  const validIpv4 = parts && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255);
+  const unsafe4 = validIpv4 && (parts[0] === 0 || parts[0] === 10 || parts[0] === 127 || (parts[0] === 169 && parts[1] === 254) || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) || (parts[0] === 192 && parts[1] === 168) || (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127));
+  const unsafe6 = host.includes(':') && (host === '::' || host === '::1' || host.startsWith('fc') || host.startsWith('fd') || /^fe[89ab]/.test(host));
+  if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || unsafe4 || unsafe6) throw new Error(`blocked unsafe network target: ${host}`);
+}
+
 async function fetchUrl(args) {
   const url = new URL(requireString(args.url, "url"));
-  if (!["http:", "https:"].includes(url.protocol)) throw new Error("only http(s) URLs are allowed");
+  assertSafeNetworkTarget(url);
   const maxChars = Math.min(Math.max(Number(args.maxChars) || 12e3, 1e3), 3e4);
   try {
     const { text, response } = await fetchTextWithResponse(url.toString(), { maxBytes: MAX_FETCH_BYTES });
     const fallbackFinalUrl = response.url || url.toString();
+    assertSafeNetworkTarget(new URL(fallbackFinalUrl));
     const title = cleanText((text.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || url.toString());
     const cleaned = cleanPolicyContent({
       html: text,
@@ -4361,6 +4373,7 @@ async function fetchUrl(args) {
     };
   } catch (error) {
     const message = String(error?.message || error || "failed");
+    if (/^blocked unsafe network target/i.test(message)) throw error;
     const statusMatch = message.match(/upstream\s+(\d{3})/i);
     return {
       ok: false,
@@ -4371,7 +4384,7 @@ async function fetchUrl(args) {
       maxChars,
       contentType: "",
       status: statusMatch ? Number(statusMatch[1]) : 0,
-      error: message
+      error: safeProviderError(error)
     };
   }
 }
@@ -4495,10 +4508,26 @@ function resolveProviderConfigContext(context) {
   }
   return context && typeof context === "object" && !("headers" in context) ? context : PROVIDER_CONFIG;
 }
+function safeConfigUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+__name(safeConfigUrl, "safeConfigUrl");
+__name2(safeConfigUrl, "safeConfigUrl");
 function providerList(context) {
   const out = {};
   for (const [k, v] of Object.entries(resolveProviderConfigContext(context))) {
-    out[k] = { enabled: v.enabled !== false, baseUrl: v.baseUrl || "", apiKeyConfigured: !!v.apiKey, apiKeyMasked: maskSecret(v.apiKey) };
+    out[k] = { enabled: v.enabled !== false, baseUrl: safeConfigUrl(v.baseUrl), apiKeyConfigured: !!v.apiKey, apiKeyMasked: maskSecret(v.apiKey) };
   }
   return { ok: true, providers: out };
 }
@@ -4517,13 +4546,13 @@ function providerSetConfig(args, context) {
   } else {
     PROVIDER_CONFIG[name] = next;
   }
-  return { ok: true, provider: name, config: { enabled: next.enabled !== false, baseUrl: next.baseUrl || "", apiKeyMasked: maskSecret(next.apiKey) } };
+  return { ok: true, provider: name, config: { enabled: next.enabled !== false, baseUrl: safeConfigUrl(next.baseUrl), apiKeyMasked: maskSecret(next.apiKey) } };
 }
 function providerGetConfig(args, context) {
   const name = String(args.provider || "").toLowerCase();
   if (!name || !PROVIDER_CONFIG[name]) throw new Error(`unsupported provider: ${name}`);
   const v = resolveProviderConfigContext(context)[name] || PROVIDER_CONFIG[name];
-  return { ok: true, provider: name, config: { enabled: v.enabled !== false, baseUrl: v.baseUrl || "", apiKeyConfigured: !!v.apiKey, apiKeyMasked: maskSecret(v.apiKey) } };
+  return { ok: true, provider: name, config: { enabled: v.enabled !== false, baseUrl: safeConfigUrl(v.baseUrl), apiKeyConfigured: !!v.apiKey, apiKeyMasked: maskSecret(v.apiKey) } };
 }
 function providerSetSpecificConfig(provider, args, context) {
   const merged = { ...args, provider };
@@ -4557,7 +4586,7 @@ async function searchOllama(args) {
     })).filter((x) => x.url || x.title);
     return searchResult({ source: "ollama", query, limit, results, fetch_path: safeHostname(endpoint) });
   } catch (error) {
-    return searchError("ollama", query, limit, error?.message || "failed");
+    return searchError("ollama", query, limit, error);
   }
 }
 async function searchParallel(args) {
@@ -4592,7 +4621,7 @@ async function searchParallel(args) {
     }
     return searchResult({ source: "parallel", query, limit, results, fetch_path: safeHostname(endpoint) });
   } catch (error) {
-    return searchError("parallel", query, limit, error?.message || "failed");
+    return searchError("parallel", query, limit, error);
   }
 }
 async function searchSiteTargetVertical(args, { source, host, preferredEngines = [searchSogou, searchBing, searchGoogle, searchBaidu, searchYandex] }) {
@@ -4636,8 +4665,18 @@ async function searchSiteTargetVertical(args, { source, host, preferredEngines =
 __name(searchSiteTargetVertical, "searchSiteTargetVertical");
 __name2(searchSiteTargetVertical, "searchSiteTargetVertical");
 
+function safeProviderError(error) {
+  if (typeof error === "string") {
+    if (/^upstream \d{3}$/.test(error) || /^missing [A-Z0-9_]+_API_KEY\./.test(error)) return error;
+    return "provider_error";
+  }
+  return error && typeof error === "object" && typeof error.code === "string" ? `provider_error:${error.code}` : "provider_error";
+}
+__name(safeProviderError, "safeProviderError");
+__name2(safeProviderError, "safeProviderError");
+
 function searchError(source, query, limit, error, extra = {}) {
-  return searchResult({ source, query, limit, results: [], error: typeof error === "string" ? error : error?.message || "failed", ...extra });
+  return searchResult({ source, query, limit, results: [], error: safeProviderError(error), ...extra });
 }
 __name(searchError, "searchError");
 __name2(searchError, "searchError");

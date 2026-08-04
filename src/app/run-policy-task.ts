@@ -6,51 +6,128 @@ import { writeResultAudit } from '../artifacts/write-result-audit.ts';
 import { writeRunTranscript } from '../artifacts/write-run-transcript.ts';
 import { writeReportHtml } from '../artifacts/write-report-html.ts';
 import { fetchWithLocalPrimary } from '../fetch-fusion/local-fetch-primary.ts';
+import { fetchWithBrowserFallback } from '../fetch-fusion/browser-fetch.ts';
+import type { BrowserAdapter } from '../fetch-fusion/browser-fetch.ts';
 import {
   pruneDiscoveryContext,
 } from '../runtime/context-governor.ts';
 import { runLocalPolicyAgentIteration } from '../runtime/run-local-policy-agent.ts';
-import { createSearchMcpTools } from '../runtime/search-mcp-tool-adapter.ts';
 import type { SearchTool, FetchTool } from '../runtime/tool-registry.ts';
+import { createSearchMcpTools } from '../runtime/search-mcp-tool-adapter.ts';
 import type { DebugEvent } from '../runtime/ask-real-claude.ts';
+import { summarizeError } from '../runtime/sanitize-debug.ts';
 import type { PolicyAgentDecision } from '../policy-task/output-schema.ts';
 import type { PolicyAgentState } from '../policy-task/state-schema.ts';
 import { createPersistentFetchTool } from '../workspace/persistent-fetch-tool.ts';
 import { classifyDate } from '../search-fusion/recency-window.ts';
+import { searchWithCloudflareLocal } from '../search-fusion/cloudflare-search-local.ts';
+import { buildDefaultAutoWebSearchArgs } from '../search-fusion/auto-router.ts';
+import {
+  createGovCnPolicyLibraryProvider,
+  createMiitPolicySearchProvider,
+  createNdrcPolicySearchProvider,
+} from '../search-fusion/official-policy-entrances.ts';
+
+function normalizeAssessmentUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.hash = '';
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    return parsed.toString();
+  } catch {
+    return url.trim();
+  }
+}
+
+function applyEvidenceAssessments(
+  pages: PolicyAgentState['fetchedEvidence'],
+  assessments: PolicyAgentDecision['evidenceAssessments'] = [],
+): PolicyAgentState['fetchedEvidence'] {
+  if (!assessments?.length) return pages;
+  const byUrl = new Map<string, NonNullable<PolicyAgentDecision['evidenceAssessments']>[number]>();
+  for (const assessment of assessments) {
+    byUrl.set(normalizeAssessmentUrl(assessment.url), assessment);
+  }
+  return pages.map((page) => {
+    const assessment = byUrl.get(normalizeAssessmentUrl(page.requestedUrl))
+      ?? byUrl.get(normalizeAssessmentUrl(page.finalUrl));
+    return assessment
+      ? { ...page, qualityCategory: assessment.qualityCategory, validationReason: assessment.validationReason }
+      : page;
+  });
+}
 
 function createDefaultFetchTool(): FetchTool {
   return {
-    fetch: async (url: string) => fetchWithLocalPrimary(url),
+    fetch: async (url: string, signal?: AbortSignal) => fetchWithLocalPrimary(url, 20000, {
+      fetchImpl: async (targetUrl, init) => await fetch(targetUrl, init),
+      signal,
+    }),
   };
 }
 
-async function createDefaultToolset(): Promise<{
+function createDefaultSearchTool(): SearchTool {
+  const fetchImpl = async (
+    url: string,
+    init?: { headers?: Record<string, string>; method?: string; body?: string; signal?: AbortSignal },
+  ) => await fetch(url, init);
+
+  return {
+    search: async (query: string, signal?: AbortSignal) => {
+      const response = await searchWithCloudflareLocal(query, {
+        fetchImpl: async (url, requestSignal) => await fetchImpl(url, { signal: requestSignal }),
+        signal,
+        webSearchArgs: buildDefaultAutoWebSearchArgs(query),
+        providerSearches: [
+          createNdrcPolicySearchProvider({ fetchImpl }),
+          createMiitPolicySearchProvider({ fetchImpl }),
+          createGovCnPolicyLibraryProvider({ fetchImpl }),
+        ],
+      });
+      return response.results;
+    },
+  };
+}
+
+type OwnedToolset = {
   searchTool: SearchTool;
   fetchTool: FetchTool;
   close?: () => Promise<void>;
-}> {
-  return await createSearchMcpTools();
+};
+
+async function createDefaultToolset(): Promise<OwnedToolset> {
+  return {
+    searchTool: createDefaultSearchTool(),
+    fetchTool: createDefaultFetchTool(),
+  };
 }
 
 async function writeDebugTraceArtifact(filePath: string, task: { topic: string }, events: DebugEvent[]): Promise<void> {
   await writeRunTranscript(filePath, {
     task,
     events,
-  });
+  }, { mode: 'debug' });
 }
 
 export async function runPolicyTaskLoop(
   input: { topic: string },
   options: {
     maxIterations?: number;
-    askAgent?: (state: PolicyAgentState) => Promise<PolicyAgentDecision>;
-    callModel?: (prompt: string) => Promise<string>;
+    askAgent?: (state: PolicyAgentState, signal?: AbortSignal) => Promise<PolicyAgentDecision>;
+    callModel?: (prompt: string, signal?: AbortSignal) => Promise<string>;
     searchTool?: SearchTool;
     fetchTool?: FetchTool;
+    browserAdapter?: BrowserAdapter;
     onDebugEvent?: (event: DebugEvent) => void;
+    onRawModelOutput?: (rawText: string) => void | Promise<void>;
+    signal?: AbortSignal;
     fromDate?: string;
     toDate?: string;
-    enableBrowser?: boolean;  } = {},
+    enableBrowser?: boolean;
+    targetHotspotCount?: number;
+    targetValidatedEvidenceCount?: number;
+    createToolset?: () => Promise<OwnedToolset>;
+  } = {},
 ): Promise<PolicyAgentState & {
   decision: PolicyAgentDecision;
   loop_interrupted_by_gate?: boolean;
@@ -65,53 +142,99 @@ export async function runPolicyTaskLoop(
     fetchedEvidence: [],
     currentIteration: 0,
     uncertainties: [],
+    targetHotspotCount: options.targetHotspotCount ?? 0,
+    targetValidatedEvidenceCount: options.targetValidatedEvidenceCount ?? 0,
   };
   let fullAuditState: PolicyAgentState = state;
-  const ownedToolset = options.searchTool && options.fetchTool ? null : await createDefaultToolset();
+  const ownedToolset = options.searchTool && options.fetchTool
+    ? null
+    : await (options.createToolset?.() ?? createDefaultToolset());
   const searchTool = options.searchTool ?? ownedToolset?.searchTool ?? createDefaultSearchTool();
   const baseFetchTool = options.fetchTool ?? ownedToolset?.fetchTool ?? createDefaultFetchTool();
-  const fetchTool = options.enableBrowser
-    ? { fetch: async (url: string) => fetchWithLocalPrimary(url, 20000, { enableBrowserFallback: true, fetchImpl: async (targetUrl, init) => await fetch(targetUrl, init) }) }
-    : createPersistentFetchTool(baseFetchTool, { taskTopic: input.topic });
+  const fetchTool = createPersistentFetchTool(
+    options.enableBrowser
+      ? {
+          fetch: async (url: string, signal?: AbortSignal) => fetchWithBrowserFallback(url, {
+            staticFetch: async (targetUrl, requestSignal) => {
+              const record = await baseFetchTool.fetch(targetUrl, requestSignal);
+              return {
+                title: record.title,
+                content: record.content,
+                finalUrl: record.finalUrl,
+              };
+            },
+            browser: options.browserAdapter,
+            now: new Date().toISOString(),
+            dateWindow: dateWindow
+              ? { start: String(dateWindow.start), end: String(dateWindow.end) }
+              : undefined,
+            signal,
+          }),
+        }
+      : baseFetchTool,
+    { taskTopic: input.topic },
+  );
 
   let lastDecision: PolicyAgentDecision | null = null;
   let currentTurnAnchorUrl: string | undefined;
+  let primaryError: unknown;
 
   try {
     for (let index = 0; index < maxIterations; index += 1) {
+      if (options.signal?.aborted) throw options.signal.reason ?? new DOMException('The operation was aborted', 'AbortError');
       const iterationInputState = pruneDiscoveryContext(state, currentTurnAnchorUrl);
       const result = await runLocalPolicyAgentIteration(iterationInputState, {
         askAgent: options.askAgent
           ? async (currentState) => {
               const prunedState = pruneDiscoveryContext(currentState, currentTurnAnchorUrl);
 
-              return await options.askAgent?.(prunedState);
+              return await options.askAgent?.(prunedState, options.signal);
             }
           : undefined,
         callModel: options.callModel,
         searchTool,
         fetchTool,
         onDebugEvent: options.onDebugEvent,
+        onRawModelOutput: options.onRawModelOutput,
+        signal: options.signal,
       });
 
       const discoveredDelta = result.discoveredCandidates.slice(iterationInputState.discoveredCandidates.length);
       const fetchedDelta = result.fetchedEvidence.slice(iterationInputState.fetchedEvidence.length);
 
+      const assessedFetchedEvidence = applyEvidenceAssessments(
+        result.fetchedEvidence,
+        result.decision.evidenceAssessments,
+      );
+
       fullAuditState = {
         task: result.task,
         discoveredCandidates: [...fullAuditState.discoveredCandidates, ...discoveredDelta],
-        fetchedEvidence: result.fetchedEvidence,
+        fetchedEvidence: assessedFetchedEvidence,
         transcriptPath: result.transcriptPath,
         currentIteration: result.currentIteration,
         uncertainties: result.uncertainties,
         transportFacts: result.transportFacts,
+        transportOutcome: result.transportOutcome,
         protocolErrors: result.protocolErrors,
+        convergencePhase: result.convergencePhase ?? fullAuditState.convergencePhase,
+        targetHotspotCount: result.targetHotspotCount ?? fullAuditState.targetHotspotCount ?? options.targetHotspotCount ?? 0,
+        targetValidatedEvidenceCount: result.targetValidatedEvidenceCount ?? fullAuditState.targetValidatedEvidenceCount ?? options.targetValidatedEvidenceCount ?? 0,
       };
       state = fullAuditState;
       lastDecision = result.decision;
       currentTurnAnchorUrl = result.decision.fetchActions.at(-1)?.url;
 
       if (['finalize', 'stop', 'summarize_and_stop'].includes(result.decision.decision)) {
+        if (result.decision.decision === 'finalize' && result.transportOutcome?.status !== 'healthy') {
+          return {
+            ...fullAuditState,
+            decision: result.decision,
+            loop_interrupted_by_gate: true,
+            final_quality_status: result.transportOutcome.status,
+            final_quality_reason: 'Finalization blocked because one or more transport operations failed.',
+          };
+        }
         return { ...fullAuditState, decision: result.decision };
       }
 
@@ -124,10 +247,26 @@ export async function runPolicyTaskLoop(
     return {
       ...fullAuditState,
       decision: lastDecision,
+      loop_interrupted_by_gate: true,
+      final_quality_reason: 'Maximum policy iterations reached before the model produced a terminal decision.',
     };
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
     if (ownedToolset?.close) {
-      await ownedToolset.close();
+      try {
+        await ownedToolset.close();
+      } catch (cleanupError) {
+        options.onDebugEvent?.({
+          type: 'mcp.cleanup.failure',
+          payload: {
+            cleanupError: summarizeError(cleanupError),
+            ...(primaryError ? { originalError: summarizeError(primaryError) } : {}),
+          },
+        });
+        if (!primaryError) throw cleanupError;
+      }
     }
   }
 }
@@ -140,6 +279,7 @@ export async function runPolicyTask(
     callModel?: (prompt: string) => Promise<string>;
     searchTool?: SearchTool;
     fetchTool?: FetchTool;
+    createToolset?: () => Promise<OwnedToolset>;
   },
 ): Promise<{
   taskSummaryPath: string;
@@ -163,7 +303,16 @@ export async function runPolicyTask(
     }
   };
 
+  let ownedToolset: OwnedToolset | null = null;
+  let primaryError: unknown;
   try {
+    if (!options.searchTool || !options.fetchTool) {
+      ownedToolset = await (options.createToolset?.() ?? createDefaultToolset());
+    }
+    const searchTool = options.searchTool ?? ownedToolset?.searchTool ?? createDefaultSearchTool();
+    if (!searchTool) {
+      throw new Error('Default search tool is unavailable.');
+    }
     const result = await runLocalPolicyAgentIteration(
       {
         task: input,
@@ -174,8 +323,8 @@ export async function runPolicyTask(
       },
       {
         callModel: options.callModel,
-        searchTool: options.searchTool ?? createDefaultSearchTool(),
-        fetchTool: createPersistentFetchTool(options.fetchTool ?? createDefaultFetchTool(), { taskTopic: input.topic }),
+        searchTool,
+        fetchTool: createPersistentFetchTool(options.fetchTool ?? ownedToolset?.fetchTool ?? createDefaultFetchTool(), { taskTopic: input.topic }),
         onDebugEvent,
       },
     );
@@ -220,21 +369,37 @@ export async function runPolicyTask(
       ...(options.debug ? { debugTracePath } : {}),
     };
   } catch (error) {
+    primaryError = error;
     if (options.debug) {
       debugEvents.push({
         type: 'run.failure',
-        payload: error instanceof Error
-          ? {
-              name: error.name,
-              message: error.message,
-              stack: error.stack ?? null,
-            }
-          : {
-              message: String(error),
-            },
+        payload: summarizeError(error),
       });
       await writeDebugTraceArtifact(debugTracePath, input, debugEvents);
     }
     throw error;
+  } finally {
+    if (ownedToolset?.close) {
+      try {
+        await ownedToolset.close();
+      } catch (cleanupError) {
+        const event: DebugEvent = {
+          type: 'mcp.cleanup.failure',
+          payload: {
+            cleanupError: summarizeError(cleanupError),
+            ...(primaryError ? { originalError: summarizeError(primaryError) } : {}),
+          },
+        };
+        onDebugEvent(event);
+        if (options.debug) {
+          try {
+            await writeDebugTraceArtifact(debugTracePath, input, debugEvents);
+          } catch {
+            // Preserve the original run or cleanup error.
+          }
+        }
+        if (!primaryError) throw cleanupError;
+      }
+    }
   }
 }

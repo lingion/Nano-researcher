@@ -34,35 +34,38 @@ test('NDRC provider maps live-shaped query results into discovery records', asyn
   assert.match(result[0]?.snippet ?? '', /同质化竞争/);
 });
 
+test('official policy providers propagate abort signal to their HTTP request', async () => {
+  const controller = new AbortController();
+  let observedSignal: AbortSignal | undefined;
+  const provider = createNdrcPolicySearchProvider({
+    fetchImpl: async (_url, init) => {
+      observedSignal = init?.signal;
+      return await new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    },
+  });
+
+  const pending = provider('招商', controller.signal);
+  controller.abort(new Error('official search aborted'));
+  await assert.rejects(pending, /official search aborted/);
+  assert.equal(observedSignal, controller.signal);
+});
 test('MIIT provider maps live-shaped search results into discovery records', async () => {
   const provider = createMiitPolicySearchProvider({
     fetchImpl: async () => ({
       text: async () => JSON.stringify({
         success: true,
-        data: {
-          searchResult: {
-            dataResults: [
-              {
-                groupData: [
-                  {
-                    data: {
-                      title_text: '工业和信息化部举行“推动国家高新区高质量发展”新闻发布会',
-                      url: '/xwfb/xwfbh/bxwfbh/art/2026/art_1645f32c491a452489025bdb9430f490.html',
-                      content: '围绕高新区高质量发展和科技创新布局进行介绍。',
-                      deploytime: '2026-05-29 09:00:00',
-                    },
-                  },
-                ],
-              },
-            ],
-          },
-        },
+        data: { searchResult: { dataResults: [{ groupData: [{ data: {
+          title_text: '工业和信息化部举行“推动国家高新区高质量发展”新闻发布会',
+          url: '/xwfb/xwfbh/bxwfbh/art/2026/art_1645f32c491a452489025bdb9430f490.html',
+          content: '围绕高新区高质量发展和科技创新布局进行介绍。',
+          deploytime: '2026-05-29 09:00:00',
+        } }] }] } },
       }),
     }),
   });
-
   const result = await provider('科技招商');
-
   assert.equal(result[0]?.source, 'miit-policy-search');
   assert.equal(result[0]?.url, 'https://www.miit.gov.cn/xwfb/xwfbh/bxwfbh/art/2026/art_1645f32c491a452489025bdb9430f490.html');
   assert.match(result[0]?.snippet ?? '', /2026-05-29/);

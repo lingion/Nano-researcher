@@ -24,26 +24,24 @@ test('returns a protocol error instead of converting an unknown decision to stop
   assert.equal(result.error?.code, 'UNKNOWN_DECISION');
 });
 
-test('rejects only malformed actions and accepts valid sibling actions', () => {
+test('rejects mixed valid and invalid actions instead of executing valid siblings', () => {
   const result = parseDecisionEnvelope(JSON.stringify({
     decision: 'continue_fetch',
     searchActions: [],
     fetchActions: [{ why: 'missing url' }, { url: 'https://example.com', why: 'valid' }],
   }));
-  assert.equal(result.ok, true);
-  assert.equal(result.actionErrors?.length, 1);
-  assert.deepEqual(result.decision?.fetchActions, [{ url: 'https://example.com', why: 'valid' }]);
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, 'INVALID_ACTION');
 });
 
-test('accepts actions without why when query or URL is syntactically valid', () => {
+test('accepts a valid action set without why when fields are syntactically valid', () => {
   const result = parseDecisionEnvelope(JSON.stringify({
-    decision: 'continue_fetch',
+    decision: 'continue_search',
     searchActions: [{ query: '国内工具' }],
-    fetchActions: [{ url: 'https://example.com/path' }],
+    fetchActions: [],
   }));
   assert.equal(result.ok, true);
   assert.deepEqual(result.decision?.searchActions, [{ query: '国内工具' }]);
-  assert.deepEqual(result.decision?.fetchActions, [{ url: 'https://example.com/path' }]);
 });
 
 test('returns a top-level protocol error for non-array action containers', () => {
@@ -63,12 +61,20 @@ test('rejects fetch actions whose URL cannot be parsed', () => {
     searchActions: [],
     fetchActions: [{ url: 'not a URL' }, { url: 'https://example.com' }],
   }));
-  assert.equal(result.ok, true);
-  assert.equal(result.actionErrors?.length, 1);
-  assert.deepEqual(result.decision?.fetchActions, [{ url: 'https://example.com' }]);
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, 'INVALID_ACTION');
 });
 
-test('returns a protocol error for missing decisions', () => {
+test('rejects terminal decisions carrying actions', () => {
+  const result = parseDecisionEnvelope(JSON.stringify({
+    decision: 'finalize',
+    searchActions: [],
+    fetchActions: [{ url: 'https://example.com' }],
+  }));
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, 'INVALID_ACTIONS');
+});
+test('rejects a missing decision', () => {
   const result = parseDecisionEnvelope(JSON.stringify({ searchActions: [], fetchActions: [] }));
   assert.equal(result.ok, false);
   assert.equal(result.error?.scope, 'decision');
@@ -80,4 +86,37 @@ test('returns a protocol error for malformed top-level JSON', () => {
   assert.equal(result.ok, false);
   assert.equal(result.error?.scope, 'envelope');
   assert.equal(result.error?.code, 'INVALID_JSON');
+});
+
+test('accepts camelCase finalPackage as the canonical final package alias', () => {
+  const finalPackage = { items: [{ product_name: 'Example' }] };
+  const result = parseDecisionEnvelope(JSON.stringify({
+    decision: 'stop',
+    searchActions: [],
+    fetchActions: [],
+    finalPackage,
+  }));
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.decision?.finalPackage, finalPackage);
+});
+
+test('rejects malformed evidence assessments instead of trusting a type assertion', () => {
+  const result = parseDecisionEnvelope(JSON.stringify({
+    decision: 'continue_fetch',
+    searchActions: [],
+    fetchActions: [{ url: 'https://example.com', why: 'inspect' }],
+    evidenceAssessments: [{ url: 'https://example.com', qualityCategory: 'INVALID' }],
+  }));
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, 'INVALID_ACTION');
+});
+
+test('requires a final package on terminal decisions', () => {
+  const result = parseDecisionEnvelope(JSON.stringify({
+    decision: 'stop',
+    searchActions: [],
+    fetchActions: [],
+  }));
+  assert.equal(result.ok, false);
+  assert.equal(result.error?.code, 'INVALID_ENVELOPE');
 });

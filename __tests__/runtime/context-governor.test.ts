@@ -15,7 +15,7 @@ test('context governor normalizes extracted document numbers in discovery candid
       url: 'https://example.com/doc.html',
       snippet: '转载中提到了关键文号',
       source: 'doc-news',
-      policy_grade: 'news_reprint',
+      access_source_grade: 'credible_reporting',
       evidence_clues: {
         extracted_doc_no: '工信厅联装[2026]1号',
       },
@@ -67,7 +67,7 @@ test('context governor keeps every candidate in input order while normalizing di
       url: 'https://gov.cn/text.html',
       snippet: '红头正文',
       source: 'official-text',
-      policy_grade: 'official_text',
+      access_source_grade: 'official_product',
     },
     {
       query: '智能制造',
@@ -75,7 +75,7 @@ test('context governor keeps every candidate in input order while normalizing di
       url: 'https://gov.cn/interp.html',
       snippet: '官方解读内容',
       source: 'gov-interpretation',
-      policy_grade: 'official_interpretation',
+      access_source_grade: 'official_access',
     },
     {
       query: '智能制造',
@@ -83,7 +83,7 @@ test('context governor keeps every candidate in input order while normalizing di
       url: 'https://t.com/doc.html',
       snippet: '转载中提到了关键文号',
       source: 'doc-news',
-      policy_grade: 'news_reprint',
+      access_source_grade: 'credible_reporting',
       evidence_clues: {
         extracted_doc_no: '工信厅联装〔2026〕1号',
       },
@@ -94,7 +94,7 @@ test('context governor keeps every candidate in input order while normalizing di
       url: 'https://t.com/noise.html',
       snippet: '普通转载噪声',
       source: 'garbage-news',
-      policy_grade: 'news_reprint',
+      access_source_grade: 'credible_reporting',
     },
   ], undefined, { maxGeneralCandidatesCount: 2 });
 
@@ -115,7 +115,7 @@ test('context governor does not hide non-anchor candidates when a current-turn a
       url: 'https://gov.cn/interp.html',
       snippet: '官方解读内容',
       source: 'high-interpretation',
-      policy_grade: 'official_interpretation',
+      access_source_grade: 'official_access',
     },
     {
       query: '思维锚点测试',
@@ -123,7 +123,7 @@ test('context governor does not hide non-anchor candidates when a current-turn a
       url: 'https://t.com/doc.html',
       snippet: '转载中提到了关键文号',
       source: 'high-doc',
-      policy_grade: 'news_reprint',
+      access_source_grade: 'credible_reporting',
       evidence_clues: {
         extracted_doc_no: '某字1号',
       },
@@ -134,7 +134,7 @@ test('context governor does not hide non-anchor candidates when a current-turn a
       url: 'https://garbage-media.com/noise.html',
       snippet: '普通转载噪声',
       source: 'low-garbage',
-      policy_grade: 'news_reprint',
+      access_source_grade: 'credible_reporting',
     },
   ], 'https://garbage-media.com/noise.html', { maxGeneralCandidatesCount: 2 });
 
@@ -145,8 +145,8 @@ test('context governor does not hide non-anchor candidates when a current-turn a
   ]);
 });
 
-test('context governor scores official interpretation above doc-bearing reprint above ordinary noise', () => {
-  assert.equal(candidateEvidenceScore({ policy_grade: 'official_interpretation' } as never) > candidateEvidenceScore({ policy_grade: 'news_reprint', evidence_clues: { extracted_doc_no: '某字1号' } } as never), true);
-  assert.equal(candidateEvidenceScore({ policy_grade: 'news_reprint', evidence_clues: { extracted_doc_no: '某字1号' } } as never) > candidateEvidenceScore({ policy_grade: 'portal_homepage' } as never), true);
-  assert.equal(candidateEvidenceScore({ policy_grade: 'portal_homepage' } as never) > candidateEvidenceScore({ policy_grade: 'news_reprint' } as never), true);
+test('context governor scores official access above credible reporting above noise', () => {
+  assert.equal(candidateEvidenceScore({ access_source_grade: 'official_access' } as never) > candidateEvidenceScore({ access_source_grade: 'credible_reporting', evidence_clues: { extracted_doc_no: '某字1号' } } as never), true);
+  assert.equal(candidateEvidenceScore({ access_source_grade: 'credible_reporting', evidence_clues: { extracted_doc_no: '某字1号' } } as never) > candidateEvidenceScore({ access_source_grade: 'noise' } as never), true);
+  assert.equal(candidateEvidenceScore({ access_source_grade: 'noise' } as never) > candidateEvidenceScore({ access_source_grade: 'corrupted' } as never), true);
 });

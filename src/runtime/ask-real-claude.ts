@@ -2,7 +2,9 @@ import Anthropic from '@anthropic-ai/sdk';
 
 import { buildPolicyPrompt } from '../policy-task/prompt-builder.js';
 import type { PolicyAgentState } from '../policy-task/state-schema.js';
-import { parseDecisionEnvelope } from './decision-protocol.js';
+import { parseDecisionEnvelope, ProtocolDecisionError } from './decision-protocol.js';
+import { cleanJsonModelOutput } from './json-output-cleaner.js';
+import { summarizeError, sanitizeDebugValue } from './sanitize-debug.js';
 
 export interface DebugEvent {
   type: string;
@@ -270,11 +272,6 @@ function normalizeCompositeDecision(
   ]);
   const fetchActions = fetchActionSources.flatMap((actions) => extractFetchActions(actions, fallbackWhy));
 
-  if (searchActions.length === 0) {
-    const revived = dedupeSearchActions(fetchActionSources.flatMap((actions) => extractFetchSearchRevivalActions(actions, fallbackWhy)));
-    searchActions.push(...revived.filter((candidate) => !searchActions.some((existing) => existing.query === candidate.query)));
-  }
-
   if (searchActions.length === 0 && fetchActions.length === 0) {
     return {
       decision: 'stop',
@@ -288,10 +285,21 @@ function normalizeCompositeDecision(
     };
   }
 
+  const explicitDecision = typeof payload.decision === 'string'
+    ? payload.decision.trim().toLowerCase().replace(/-/g, '_')
+    : typeof payload.status === 'string'
+      ? payload.status.trim().toLowerCase().replace(/-/g, '_')
+      : undefined;
+  const decision = fetchActions.length > 0 && searchActions.length === 0
+    ? 'continue_fetch'
+    : explicitDecision === 'continue_fetch' || explicitDecision === 'search_and_fetch'
+      ? 'continue_fetch'
+      : 'continue_search';
+
   return {
-    decision: searchActions.length > 0 ? 'continue_search' : 'continue_fetch',
+    decision,
     reasoning: simpleJudgment ?? 'Need additional official-source searches before continuing.',
-    searchActions,
+    searchActions: decision === 'continue_fetch' && searchActions.length === 0 ? [] : searchActions,
     fetchActions,
     evidenceAssessments: Array.isArray(payload.evidenceAssessments) ? payload.evidenceAssessments as PolicyAgentDecision['evidenceAssessments'] : [],
     finalPackage: extractFinalPackage(payload),
@@ -353,20 +361,12 @@ function legacyNormalizeDecision(
   const normalizedDecision = typeof payload.decision === 'string'
     ? payload.decision.trim().toUpperCase()
     : undefined;
-  const indicatesContinueSearch = normalizedStatus === 'NEED_RADAR_SEARCH'
-    || normalizedStatus === 'NEEDS_RADAR_SEARCH'
-    || normalizedStatus === 'NEEDS_SEARCH'
-    || normalizedStatus === 'NEED_SEARCH'
-    || normalizedStatus === 'CONTINUE_SEARCH'
-    || normalizedStatus === 'CONTINUE'
-    || stopDecision?.shouldStop === false;
-
   const indicatedDecision = pickNonEmptyString(
     typeof payload.decision === 'string' ? payload.decision : undefined,
     typeof payload.status === 'string' ? payload.status : undefined,
   );
 
-  if ((combinedSearches.length > 0 || indicatesContinueSearch) && (!payload.decision || normalizedDecision === 'CONTINUE')) {
+  if (combinedSearches.length > 0 && (!payload.decision || normalizedDecision === 'CONTINUE')) {
     return {
       decision: 'continue_search',
       reasoning: simpleJudgment ?? 'Need additional official-source searches before continuing.',
@@ -387,16 +387,9 @@ function legacyNormalizeDecision(
 
   if (simpleJudgment && (!payload.decision || normalizedDecision === 'CONTINUE')) {
     return {
-      decision: /证据不足|需要先搜索|先搜索/i.test(simpleJudgment) || normalizedDecision === 'CONTINUE' ? 'continue_search' : 'stop',
+      decision: normalizedDecision === 'CONTINUE' ? 'stop' : 'stop',
       reasoning: simpleJudgment,
-      searchActions: /证据不足|需要先搜索|先搜索/i.test(simpleJudgment) || normalizedDecision === 'CONTINUE'
-        ? [
-            {
-              query: '官方政策页面',
-              why: simpleJudgment,
-            },
-          ]
-        : [],
+      searchActions: [],
       fetchActions: [],
       finalPackage: extractFinalPackage(payload),
       uncertainties: /证据不足/i.test(simpleJudgment) ? [simpleJudgment] : [],
@@ -412,11 +405,11 @@ function legacyNormalizeDecision(
   );
 
   return {
-    decision: (normalizedDecision === 'CONTINUE' && Array.isArray(payload.searchActions) && payload.searchActions.length > 0)
+    decision: (normalizedStatus === 'CONTINUE' && Array.isArray(payload.searchActions) && payload.searchActions.length > 0)
       ? 'continue_search'
-      : (normalizedDecision === 'CONTINUE' && explicitFetchActions.length > 0)
+      : (normalizedStatus === 'CONTINUE' && explicitFetchActions.length > 0)
         ? 'continue_fetch'
-        : normalizedDecision === 'CONTINUE_FETCH' || normalizedDecision === 'CONTINUE-FETCH'
+        : normalizedStatus === 'CONTINUE_FETCH' || normalizedStatus === 'CONTINUE-FETCH'
           ? 'continue_fetch'
           : indicatedDecision ?? 'stop',
     reasoning: payload.reasoning ?? 'No reasoning returned.',
@@ -476,18 +469,50 @@ function normalizeDecision(payload: Partial<PolicyAgentDecision> & Record<string
   return legacyNormalizeDecision(payload, simpleJudgment);
 }
 
-function serializeError(error: unknown): Record<string, unknown> {
-  if (error instanceof Error) {
+function isLegacyModelShape(payload: Record<string, unknown>): boolean {
+  return [
+    'status',
+    'stopDecision',
+    'finalJudgment',
+    'requiredSearches',
+    'recommendedNextActions',
+    'next_actions',
+    'nextActions',
+    'radarActions',
+    'combinedActions',
+    'fetchActions',
+    'fetch_actions',
+  ].some((key) => Object.prototype.hasOwnProperty.call(payload, key));
+}
+
+function parseModelDecision(rawText: string): ReturnType<typeof parseDecisionEnvelope> {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(rawText);
+  } catch {
+    const cleaned = cleanJsonModelOutput(rawText);
+    if (!cleaned.candidateText) return parseDecisionEnvelope(rawText);
+    try {
+      payload = JSON.parse(cleaned.candidateText);
+    } catch {
+      return parseDecisionEnvelope(rawText);
+    }
+  }
+
+  if (payload && typeof payload === 'object' && !Array.isArray(payload) && isLegacyModelShape(payload as Record<string, unknown>)) {
     return {
-      name: error.name,
-      message: error.message,
-      stack: error.stack ?? null,
+      ok: true,
+      decision: normalizeDecision(payload as Partial<PolicyAgentDecision> & Record<string, unknown>),
+      envelope: payload as Record<string, unknown>,
     };
   }
 
-  return {
-    message: String(error),
-  };
+  const normalizedText = JSON.stringify(payload);
+  return parseDecisionEnvelope(normalizedText);
+}
+
+function serializeError(error: unknown): Record<string, unknown> {
+  return summarizeError(error);
 }
 
 function resolveRuntimeModel(): string {
@@ -497,13 +522,18 @@ function resolveRuntimeModel(): string {
 async function defaultCallModel(
   prompt: string,
   options: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
     onDebugEvent?: (event: DebugEvent) => void;
   } = {},
 ): Promise<string> {
   const model = resolveRuntimeModel();
+  const configuredTimeout = Number(process.env.LIVE_AUDIT_MODEL_TIMEOUT_MS ?? '120000');
+  const timeoutMs = options.timeoutMs ?? (Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 120000);
   const client = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
     baseURL: process.env.ANTHROPIC_BASE_URL,
+    timeout: timeoutMs,
   });
 
   options.onDebugEvent?.({
@@ -519,7 +549,7 @@ async function defaultCallModel(
     model,
     max_tokens: 4000,
     messages: [{ role: 'user', content: prompt }],
-  });
+  }, { signal: options.signal });
 
   return response.content
     .filter((block) => block.type === 'text')
@@ -530,16 +560,23 @@ async function defaultCallModel(
 export async function askRealClaudeDecision(
   state: PolicyAgentState,
   options: {
-    callModel?: (prompt: string) => Promise<string>;
+    callModel?: (prompt: string, signal?: AbortSignal) => Promise<string>;
     onDebugEvent?: (event: DebugEvent) => void;
+    onRawModelOutput?: (rawText: string) => void | Promise<void>;
+    signal?: AbortSignal;
   } = {},
 ): Promise<PolicyAgentDecision> {
   const prompt = [buildPolicyPrompt(), '', buildUserState(state)].join('\n');
   options.onDebugEvent?.({
     type: 'model.prompt',
     payload: {
-      prompt,
-      state,
+      promptLength: prompt.length,
+      stateSummary: sanitizeDebugValue({
+        currentIteration: state.currentIteration,
+        discoveredCandidates: state.discoveredCandidates.length,
+        fetchedEvidence: state.fetchedEvidence.length,
+        uncertainties: state.uncertainties.length,
+      }),
     },
   });
 
@@ -557,33 +594,29 @@ export async function askRealClaudeDecision(
   try {
     let rawText: string | undefined;
     rawText = await (options.callModel
-      ? options.callModel(prompt)
-      : defaultCallModel(prompt, { onDebugEvent: options.onDebugEvent }));
+      ? options.callModel(prompt, options.signal)
+      : defaultCallModel(prompt, { onDebugEvent: options.onDebugEvent, signal: options.signal }));
     options.onDebugEvent?.({
       type: 'model.raw_output',
       payload: {
-        rawText,
+        rawTextLength: rawText.length,
+        hasRawText: rawText.length > 0,
       },
     });
+    await options.onRawModelOutput?.(rawText);
 
-    const parsed = parseDecisionEnvelope(rawText);
+    const parsed = parseModelDecision(rawText);
     if (!parsed.ok) {
-      const decision = {
-        decision: undefined,
-        reasoning: '',
-        searchActions: [],
-        fetchActions: [],
-        uncertainties: [],
-        discardedLeads: [],
-        protocolErrors: [parsed.error],
-      } as unknown as import('../policy-task/output-schema.js').PolicyAgentDecision;
       options.onDebugEvent?.({ type: 'model.protocol_error', payload: { error: parsed.error } });
-      return decision;
+      throw new ProtocolDecisionError(parsed.error);
     }
     const decision = parsed.decision;
     options.onDebugEvent?.({
       type: 'model.parsed_decision',
-      payload: { decision, actionErrors: parsed.actionErrors ?? [] },
+      payload: {
+        decision: sanitizeDebugValue(decision) as Record<string, unknown>,
+        actionErrors: sanitizeDebugValue(parsed.actionErrors ?? []) as unknown[],
+      },
     });
     return decision;
   } catch (error) {

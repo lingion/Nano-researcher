@@ -74,6 +74,33 @@ test('nanoclaw bridge prefers NANOCLAW_* env vars over ANTHROPIC_* fallbacks', (
   }
 });
 
+test('nanoclaw bridge rejects non-finite model timeout configuration', () => {
+  const original = {
+    NANOCLAW_API_KEY: process.env.NANOCLAW_API_KEY,
+    NANOCLAW_BASE_URL: process.env.NANOCLAW_BASE_URL,
+    NANOCLAW_LLM_PROVIDER: process.env.NANOCLAW_LLM_PROVIDER,
+    POLICY_AGENT_LLM_MODEL: process.env.POLICY_AGENT_LLM_MODEL,
+    LIVE_AUDIT_MODEL_TIMEOUT_MS: process.env.LIVE_AUDIT_MODEL_TIMEOUT_MS,
+  };
+
+  process.env.NANOCLAW_API_KEY = 'test-key';
+  process.env.NANOCLAW_BASE_URL = 'https://nano.example/v1';
+  process.env.NANOCLAW_LLM_PROVIDER = 'openai';
+  process.env.POLICY_AGENT_LLM_MODEL = 'gpt-5.4';
+  process.env.LIVE_AUDIT_MODEL_TIMEOUT_MS = 'NaN';
+
+  try {
+    assert.throws(
+      () => resolveNanoclawRuntimeConfig(),
+      /LIVE_AUDIT_MODEL_TIMEOUT_MS must be a non-negative finite number/,
+    );
+  } finally {
+    for (const [key, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
 test('nanoclaw bridge sends a custom model unchanged and normalizes openai-compatible text output', async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
 
@@ -185,7 +212,28 @@ test('nanoclaw bridge probes the gateway models endpoint with sanitized intellig
     sampleModelIds: ['gpt-5.4', 'gpt-4.1'],
     includesConfiguredModel: true,
     configuredModel: 'gpt-5.4',
+    configuredModels: ['gpt-5.4'],
+    includedConfiguredModels: ['gpt-5.4'],
   });
+});
+
+test('nanoclaw bridge probes primary and fallback model compatibility together', async () => {
+  const probe = await probeNanoclawGatewayModels({
+    config: {
+      apiKey: 'nano-key',
+      baseURL: 'https://nano.example/v1',
+      model: 'gpt-5.4',
+      fallbackModel: 'gpt-5.4-mini',
+      provider: 'openai',
+    },
+    fetchImpl: async () => new Response(JSON.stringify({
+      object: 'list',
+      data: [{ id: 'gpt-5.4' }, { id: 'gpt-5.4-mini' }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  });
+
+  assert.deepEqual(probe.configuredModels, ['gpt-5.4', 'gpt-5.4-mini']);
+  assert.deepEqual(probe.includedConfiguredModels, ['gpt-5.4', 'gpt-5.4-mini']);
 });
 
 test('nanoclaw bridge surfaces safe enriched empty-response diagnostics without secrets', async () => {
@@ -444,7 +492,81 @@ test('nanoclaw bridge switches to configured fallback model after primary reques
   assert.deepEqual(models, ['gpt-5.4', 'gpt-5.4', 'gpt-5.4', 'gpt-5.4-mini']);
 });
 
-test('nanoclaw bridge logs raw SSE chunk forensics only when live audit debug is enabled', async (t) => {
+test('nanoclaw bridge propagates external abort to the in-flight fetch and skips fallback', async () => {
+  const controller = new AbortController();
+  const models: string[] = [];
+  let observedSignal: AbortSignal | undefined;
+
+  const pending = callNanoclawModel('prompt-body', {
+    signal: controller.signal,
+    config: {
+      apiKey: 'nano-key',
+      baseURL: 'https://nano.example/v1',
+      model: 'gpt-5.4',
+      fallbackModel: 'gpt-5.4-mini',
+      provider: 'openai',
+      requestTimeoutMs: 1000,
+    },
+    fetchImpl: async (_url, init) => {
+      const signal = init?.signal as AbortSignal;
+      observedSignal = signal;
+      const body = JSON.parse(String(init?.body)) as { model: string };
+      models.push(body.model);
+      return await new Promise<Response>((_resolve, reject) => {
+        if (signal.aborted) {
+          reject(signal.reason ?? new DOMException('aborted', 'AbortError'));
+          return;
+        }
+        signal.addEventListener('abort', () => reject(signal.reason ?? new DOMException('aborted', 'AbortError')), { once: true });
+      });
+    },
+  });
+
+  controller.abort(new Error('run timed out'));
+  await assert.rejects(pending, (error: unknown) => error instanceof Error && error.message === 'run timed out');
+  assert.equal(observedSignal?.aborted, true);
+  assert.deepEqual(models, ['gpt-5.4']);
+});
+
+test('nanoclaw bridge aborts retry backoff without unhandled fallback work', async () => {
+  const controller = new AbortController();
+  let attempts = 0;
+  let sleepSignal: AbortSignal | undefined;
+
+  const pending = callNanoclawModel('prompt-body', {
+    signal: controller.signal,
+    config: {
+      apiKey: 'nano-key',
+      baseURL: 'https://nano.example/v1',
+      model: 'gpt-5.4',
+      fallbackModel: 'gpt-5.4-mini',
+      provider: 'openai',
+    },
+    fetchImpl: async () => {
+      attempts += 1;
+      return new Response('gateway unavailable', { status: 503, statusText: 'Service Unavailable' });
+    },
+    jitterSource: () => 0,
+    sleepImpl: async (_delayMs, signal) => {
+      sleepSignal = signal;
+      await new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        setTimeout(resolve, 1000);
+      });
+    },
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort(new Error('run timed out'));
+  await assert.rejects(pending, (error: unknown) => error instanceof Error && error.message === 'run timed out');
+  assert.equal(sleepSignal?.aborted, true);
+  assert.equal(attempts, 1);
+});
+test('nanoclaw bridge logs only aggregate SSE metadata without raw content when debug is enabled', async (t) => {
   const originalDebug = process.env.LIVE_AUDIT_DEBUG;
   process.env.LIVE_AUDIT_DEBUG = '1';
   const logs: string[] = [];
@@ -475,10 +597,14 @@ test('nanoclaw bridge logs raw SSE chunk forensics only when live audit debug is
     else process.env.LIVE_AUDIT_DEBUG = originalDebug;
   }
 
-  assert.equal(logs.some((line) => line.includes('=== [SSE RAW STREAM CUTTING SHAPES] ===')), true);
-  assert.equal(logs.some((line) => line.includes('Total raw lines detected: 4')), true);
-  assert.equal(logs.some((line) => line.includes('[Verdict Metadata] Total Chunks: 2, Non-Empty Chunks: 2')), true);
-  assert.equal(logs.some((line) => line.includes('[Chunk 1] text="A"')), true);
+  assert.equal(logs.some((line) => line.includes('[SSE AGGREGATE METADATA]')), true);
+  assert.equal(logs.some((line) => line.includes('"lineCount":4')), true);
+  assert.equal(logs.some((line) => line.includes('"chunkCount":2')), true);
+  assert.equal(logs.some((line) => line.includes('"nonEmptyChunkCount":2')), true);
+  assert.equal(logs.some((line) => line.includes('"doneSeen":true')), true);
+  assert.equal(logs.some((line) => line.includes('data: {')), false);
+  assert.equal(logs.some((line) => line.includes('[Chunk 1] text=')), false);
+  assert.equal(logs.some((line) => line.includes('SYNTHETIC')), false);
 });
 
 test('nanoclaw bridge does not emit SSE chunk forensics when live audit debug is disabled', async (t) => {

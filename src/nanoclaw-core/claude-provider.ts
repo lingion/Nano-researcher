@@ -173,8 +173,8 @@ const preToolUseHook: HookCallback = async (input) => {
     toolName === 'Bash' && typeof i.tool_input?.timeout === 'number' ? (i.tool_input.timeout as number) : null;
   try {
     setContainerToolInFlight(toolName, declaredTimeoutMs);
-  } catch (err) {
-    log(`PreToolUse: failed to record container_state: ${err instanceof Error ? err.message : String(err)}`);
+  } catch {
+    log('PreToolUse: failed to record container state');
   }
   return { continue: true };
 };
@@ -183,8 +183,8 @@ const preToolUseHook: HookCallback = async (input) => {
 const postToolUseHook: HookCallback = async () => {
   try {
     clearContainerToolInFlight();
-  } catch (err) {
-    log(`PostToolUse: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
+  } catch {
+    log('PostToolUse: failed to clear container state');
   }
   return { continue: true };
 };
@@ -225,10 +225,10 @@ function archiveTranscriptFile(transcriptPath: string | undefined, sessionId: st
     fs.mkdirSync(conversationsDir, { recursive: true });
     const filename = `${new Date().toISOString().split('T')[0]}-${name}.md`;
     fs.writeFileSync(path.join(conversationsDir, filename), formatTranscriptMarkdown(messages, summary, assistantName));
-    log(`Archived conversation to ${filename}`);
+    log('Archived conversation transcript');
     return true;
-  } catch (err) {
-    log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
+  } catch {
+    log('Failed to archive transcript');
     return false;
   }
 }
@@ -373,9 +373,9 @@ export class ClaudeProvider implements AgentProvider {
 
     let reason: string | null = null;
     if (size > maxBytes) {
-      reason = `transcript ${(size / 1_048_576).toFixed(1)}MB > ${(maxBytes / 1_048_576).toFixed(0)}MB cap`;
+      reason = 'transcript exceeded size cap';
     } else if (startMs !== null && ageMs > maxAgeMs) {
-      reason = `transcript ${(ageMs / 86_400_000).toFixed(1)}d old > ${(maxAgeMs / 86_400_000).toFixed(0)}d cap`;
+      reason = 'transcript exceeded age cap';
     }
     if (!reason) return null;
 
@@ -384,8 +384,8 @@ export class ClaudeProvider implements AgentProvider {
     archiveTranscriptFile(transcriptPath, continuation, this.assistantName);
     try {
       fs.renameSync(transcriptPath, `${transcriptPath}.rotated-${Date.now()}`);
-    } catch (err) {
-      log(`Failed to move rotated transcript aside: ${err instanceof Error ? err.message : String(err)}`);
+    } catch {
+      log('Failed to move rotated transcript aside');
     }
     return reason;
   }
@@ -429,10 +429,8 @@ export class ClaudeProvider implements AgentProvider {
     let aborted = false;
 
     async function* translateEvents(): AsyncGenerator<ProviderEvent> {
-      let messageCount = 0;
       for await (const message of sdkResult) {
         if (aborted) return;
-        messageCount++;
 
         // Yield activity for every SDK event so the poll loop knows the agent is working
         yield { type: 'activity' };
@@ -455,7 +453,7 @@ export class ClaudeProvider implements AgentProvider {
           yield { type: 'progress', message: tn.summary || 'Task notification' };
         }
       }
-      log(`Query completed after ${messageCount} SDK messages`);
+      log('Query completed');
     }
 
     return {

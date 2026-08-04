@@ -89,14 +89,14 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   if (continuation) {
     const rotateReason = config.provider.maybeRotateContinuation?.(continuation, config.cwd);
     if (rotateReason) {
-      log(`Rotating session — ${rotateReason}; starting fresh`);
+      log('Session rotation requested; starting fresh');
       clearContinuation(config.providerName);
       continuation = undefined;
     }
   }
 
   if (continuation) {
-    log(`Resuming agent session ${continuation}`);
+    log('Resuming agent session (continuation present)');
   }
 
   // Clear leftover 'processing' acks from a previous crashed container.
@@ -113,7 +113,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     // Periodic heartbeat so we know the loop is alive
     if (pollCount % 30 === 0) {
-      log(`Poll heartbeat (${pollCount} iterations, ${messages.length} pending)`);
+      log('Poll heartbeat');
     }
 
     if (messages.length === 0) {
@@ -171,7 +171,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     if (normalMessages.length === 0) {
       const remainingIds = ids.filter((id) => !commandIds.includes(id));
       if (remainingIds.length > 0) markCompleted(remainingIds);
-      log(`All ${messages.length} message(s) were commands, skipping query`);
+      log('Command-only batch skipped');
       continue;
     }
 
@@ -189,12 +189,12 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     skipped = preTask.skipped;
     if (skipped.length > 0) {
       markCompleted(skipped);
-      log(`Pre-task script skipped ${skipped.length} task(s): ${skipped.join(', ')}`);
+      log('Pre-task script skipped task batch');
     }
     // MODULE-HOOK:scheduling-pre-task:end
 
     if (keep.length === 0) {
-      log(`All ${normalMessages.length} non-command message(s) gated by script, skipping query`);
+      log('Non-command batch gated by pre-task script');
       continue;
     }
 
@@ -202,7 +202,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // provider natively handles slash commands), others get XML.
     const prompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
 
-    log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
+    log('Processing message batch');
 
     const query = config.provider.query({
       prompt,
@@ -225,13 +225,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      log(`Query error: ${errMsg}`);
+      log('Query error: upstream failure');
 
       // Stale/corrupt continuation recovery: ask the provider whether
       // this error means the stored continuation is unusable, and clear
       // it so the next attempt starts fresh.
       if (continuation && config.provider.isSessionInvalid(err)) {
-        log(`Stale session detected (${continuation}) — clearing for next retry`);
+        log('Stale session detected; clearing for next retry');
         continuation = undefined;
         clearContinuation(config.providerName);
       }
@@ -243,7 +243,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         platform_id: routing.platformId,
         channel_type: routing.channelType,
         thread_id: routing.threadId,
-        content: JSON.stringify({ text: `Error: ${errMsg}` }),
+        content: JSON.stringify({ text: 'The agent could not complete this request.' }),
       });
     } finally {
       clearCurrentInReplyTo();
@@ -252,7 +252,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // Ensure completed even if processQuery ended without a result event
     // (e.g. stream closed unexpectedly).
     markCompleted(processingIds);
-    log(`Completed ${ids.length} message(s)`);
+    log('Message batch completed');
   }
 }
 
@@ -364,7 +364,7 @@ async function processQuery(
         skipped = preTask.skipped;
         if (skipped.length > 0) {
           markCompleted(skipped);
-          log(`Pre-task script skipped ${skipped.length} follow-up task(s): ${skipped.join(', ')}`);
+          log('Pre-task script skipped follow-up batch');
         }
         // MODULE-HOOK:scheduling-pre-task-followup:end
 
@@ -376,7 +376,7 @@ async function processQuery(
 
         const keptIds = keep.map((m) => m.id);
         const prompt = formatMessages(keep);
-        log(`Pushing ${keep.length} follow-up message(s) into active query`);
+        log('Pushing follow-up messages into active query');
         unwrappedNudged = false;
         query.push(prompt);
         markCompleted(keptIds);
@@ -386,7 +386,7 @@ async function processQuery(
         // path is wrapped by processQuery's outer try/catch; the follow-up
         // path is not, so it needs its own.
         const errMsg = err instanceof Error ? err.message : String(err);
-        log(`Follow-up poll error: ${errMsg}`);
+        log('Follow-up poll error: upstream failure');
 
         // Detect SQLite cross-mount corruption (Docker Desktop macOS virtiofs /
         // gRPC-FUSE coherency bug — the kernel page cache for the inbound.db
@@ -398,8 +398,8 @@ async function processQuery(
           corruptionStreak += 1;
           if (corruptionStreak >= CORRUPTION_STREAK_EXIT) {
             log(
-              `Follow-up poll: ${corruptionStreak} consecutive '${errMsg}' errors — ` +
-                `inbound.db page cache is poisoned. Exiting so host respawns with a fresh mount.`,
+              `Follow-up poll: ${corruptionStreak} consecutive database-corruption errors — ` +
+                'inbound.db page cache is poisoned. Exiting so host respawns with a fresh mount.',
             );
             // Stop touching the heartbeat so host-sweep stale detection fires
             // promptly even if exit() races with in-flight async work.
@@ -467,18 +467,18 @@ async function processQuery(
 function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
   switch (event.type) {
     case 'init':
-      log(`Session: ${event.continuation}`);
+      log('Session initialized (continuation present)');
       break;
     case 'result':
-      log(`Result: ${event.text ? event.text.slice(0, 200) : '(empty)'}`);
+      log('Result received');
       break;
     case 'error':
       log(
-        `Error: ${event.message} (retryable: ${event.retryable}${event.classification ? `, ${event.classification}` : ''})`,
+        `Provider error (retryable: ${event.retryable}${event.classification ? `, ${event.classification}` : ''})`,
       );
       break;
     case 'progress':
-      log(`Progress: ${event.message}`);
+      log('Provider progress event received');
       break;
   }
 }
@@ -509,8 +509,8 @@ function dispatchResultText(text: string, routing: RoutingContext): { sent: numb
 
     const dest = findByName(toName);
     if (!dest) {
-      log(`Unknown destination in <message to="${toName}">, dropping block`);
-      scratchpadParts.push(`[dropped: unknown destination "${toName}"] ${body}`);
+      log('Unknown destination in agent output, dropping block');
+      scratchpadParts.push('[dropped unknown destination]');
       continue;
     }
     sendToDestination(dest, body, routing);
@@ -523,12 +523,12 @@ function dispatchResultText(text: string, routing: RoutingContext): { sent: numb
   const scratchpad = stripInternalTags(scratchpadParts.join(''));
 
   if (scratchpad) {
-    log(`[scratchpad] ${scratchpad.slice(0, 500)}${scratchpad.length > 500 ? '…' : ''}`);
+    log('Agent scratchpad received');
   }
 
   const hasUnwrapped = sent === 0 && !!scratchpad;
   if (hasUnwrapped) {
-    log(`WARNING: agent output had no <message to="..."> blocks — nothing was sent`);
+    log('Agent output contained no message blocks');
   }
   return { sent, hasUnwrapped };
 }
@@ -570,8 +570,8 @@ function resolveDestinationThread(
       )
       .get(channelType, platformId) as { thread_id: string | null; id: string } | undefined;
     if (row) return { threadId: row.thread_id, inReplyTo: row.id };
-  } catch (err) {
-    log(`resolveDestinationThread error: ${err instanceof Error ? err.message : String(err)}`);
+  } catch {
+    log('resolveDestinationThread failed: database lookup unavailable');
   }
   return null;
 }

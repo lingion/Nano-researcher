@@ -24,7 +24,7 @@ interface SearchLikeResult {
   snippet?: string;
   source?: string;
   query?: string;
-  policy_grade?: string;
+  access_source_grade?: string;
 }
 
 const SEARCH_SOURCE_REGISTRY: SearchSourceDefinition[] = [

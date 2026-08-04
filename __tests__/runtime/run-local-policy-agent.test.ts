@@ -125,7 +125,7 @@ test('runtime emits brain action audit counts for search and fetch decisions whe
         decision: 'continue_search',
         reasoning: 'Need candidate URLs and page evidence.',
         searchActions: [{ query: '科技招商政策', why: 'start broad' }],
-        fetchActions: [{ url: 'https://example.gov.cn/policy', why: 'fetch official evidence' }],
+        fetchActions: [],
         discardedLeads: [],
         uncertainties: ['Need fetched evidence'],
       }),
@@ -147,14 +147,14 @@ test('runtime emits brain action audit counts for search and fetch decisions whe
     else process.env.LIVE_AUDIT_DEBUG = originalDebug;
   }
 
-  assert.equal(logs.some((line) => line.includes('=== [LLM BRAIN ACTION DEFLECTION AUDIT] ===')), true);
-  assert.equal(logs.some((line) => line.includes('decision.type = "continue_search"')), true);
-  assert.equal(logs.some((line) => line.includes('decision.searchActions count = 1')), true);
-  assert.equal(logs.some((line) => line.includes('decision.fetchActions count = 1')), true);
-  assert.equal(logs.some((line) => line.includes('https://example.gov.cn/policy')), true);
+  assert.equal(logs.some((line) => line.includes('=== [LLM BRAIN ACTION DEFLECTION AUDIT] ===')), false);
+  assert.equal(logs.some((line) => line.includes('decision.type = "continue_search"')), false);
+  assert.equal(logs.some((line) => line.includes('decision.searchActions count = 1')), false);
+  assert.equal(logs.some((line) => line.includes('decision.fetchActions count = 0')), false);
+  assert.equal(logs.some((line) => line.includes('LLM refused to issue FETCH action')), false);
 });
 
-test('runtime brain audit can print raw model output excerpt when decision finalPackage carries raw payload', async (t) => {
+test('runtime brain audit does not print raw model output or URL excerpts', async (t) => {
   const originalDebug = process.env.LIVE_AUDIT_DEBUG;
   process.env.LIVE_AUDIT_DEBUG = '1';
   const logs: string[] = [];
@@ -199,15 +199,43 @@ test('runtime brain audit can print raw model output excerpt when decision final
     else process.env.LIVE_AUDIT_DEBUG = originalDebug;
   }
 
-  assert.equal(logs.some((line) => line.includes('=== [RAW BRAIN OUTPUT CELL BIOPSY] ===')), true);
-  assert.equal(logs.some((line) => line.includes('https://www.hlj.gov.cn/')), true);
+  assert.equal(logs.some((line) => line.includes('=== [RAW BRAIN OUTPUT CELL BIOPSY] ===')), false);
+  assert.equal(logs.some((line) => line.includes('https://www.hlj.gov.cn/')), false);
+});
+
+test('runtime projects askAgent failure without emitting a successful decision', async () => {
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const failure = new Error('model backend exploded');
+
+  await assert.rejects(
+    () => runLocalPolicyAgentIteration({
+      task: { topic: '科技招商政策' },
+      discoveredCandidates: [],
+      fetchedEvidence: [],
+      currentIteration: 2,
+      uncertainties: [],
+    }, {
+      askAgent: async () => {
+        throw failure;
+      },
+      searchTool: { search: async () => [] },
+      fetchTool: { fetch: async () => { throw new Error('unexpected fetch'); } },
+      onDebugEvent: (event) => events.push(event),
+    }),
+    (error) => error === failure,
+  );
+
+  assert.equal(events.some((event) => event.type === 'agent.failure'), true);
+  assert.equal(events.some((event) => event.type === 'state.updated'), true);
+  assert.equal(events.some((event) => event.type === 'agent.decision'), false);
+  const stateEvent = events.find((event) => event.type === 'state.updated');
+  assert.equal((stateEvent?.payload.state as { runtimeFailure?: { stage?: string } }).runtimeFailure?.stage, 'agent');
 });
 
 test('runtime emits tool-specific failure events when search fails', async () => {
   const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
 
-  await assert.rejects(
-    () => runLocalPolicyAgentIteration({
+  await runLocalPolicyAgentIteration({
       task: { topic: '科技招商政策' },
       discoveredCandidates: [],
       fetchedEvidence: [],
@@ -239,8 +267,7 @@ test('runtime emits tool-specific failure events when search fails', async () =>
       onDebugEvent: (event) => {
         events.push(event);
       },
-    }),
-    /search backend exploded/,
+    }
   );
 
   assert.equal(events.some((event) => event.type === 'tool.search.request'), true);

@@ -6,6 +6,19 @@ export type DiscoveredCandidate = SearchDiscoveryRecord;
 
 export type FetchedEvidence = FetchedPageRecord;
 
+export type ConvergencePhase = 'post_convergence_review' | 'final_summary';
+
+export interface TransportOutcome {
+  status: 'healthy' | 'degraded' | 'failed';
+  failedOperations: number;
+  lastFailure?: Record<string, unknown>;
+}
+
+export interface RuntimeFailure {
+  stage: 'agent' | 'search' | 'fetch';
+  error: Record<string, unknown>;
+}
+
 export interface PolicyAgentState {
   task: PolicyTaskInput;
   discoveredCandidates: DiscoveredCandidate[];
@@ -15,7 +28,10 @@ export interface PolicyAgentState {
   uncertainties: string[];
   /** Transport-visible facts and protocol failures; runtime must not infer business outcomes. */
   transportFacts?: Array<Record<string, unknown>>;
+  transportOutcome?: TransportOutcome;
   protocolErrors?: Array<Record<string, unknown>>;
-  convergencePhase?: 'post_convergence_review' | 'final_summary';
+  runtimeFailure?: RuntimeFailure;
+  convergencePhase?: ConvergencePhase;
+  targetHotspotCount?: number;
   targetValidatedEvidenceCount?: number;
 }

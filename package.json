@@ -4,11 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "pnpm build:policy && pnpm build:generic",
+    "build:policy": "tsc -p tsconfig.json",
+    "build:generic": "tsc -p tsconfig.generic.json",
     "test": "tsx --test \"__tests__/**/*.test.ts\" \"src/**/*.test.ts\"",
-    "start": "pnpm live-audit",
+    "start": "pnpm generic-agent",
     "policy-scanner": "tsx bin/policy-scanner.ts",
     "live-audit": "tsx src/app/run-live-audit.ts",
+    "legacy-audit": "tsx src/app/run-live-audit.ts",
+    "generic-agent": "tsx src/app/run-generic-agent.ts",
+    "generic-http": "tsx src/adapters/http/start.ts",
+    "generic-mcp": "tsx src/adapters/mcp/start.ts",
+    "install:browsers": "playwright install chromium",
     "test:fixture": "tsx --test __tests__/fixtures/golden-live-audit.test.ts"
   },
   "dependencies": {
@@ -22,6 +29,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.7",
+    "playwright": "^1.55.0",
     "tsx": "^4.20.3",
     "typescript": "^5.7.3"
   }

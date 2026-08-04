@@ -12,7 +12,7 @@ test('run-live-audit exports a local heavy-cannon initializer for CLI fetch inje
   assert.equal(typeof liveAuditModule.initializeLocalHeavyCannonWebFetch, 'function');
 });
 
-test('policy loop uses the runtime-owned MCP default path instead of the removed legacy backend', async () => {
+test('policy loop uses the local search and fetch default path', async () => {
   let decisionStep = 0;
 
   const result = await runPolicyTaskLoop(
@@ -24,7 +24,7 @@ test('policy loop uses the runtime-owned MCP default path instead of the removed
         if (decisionStep === 1) {
           return {
             decision: 'continue_search',
-            reasoning: 'Use the runtime-owned MCP search path.',
+            reasoning: 'Use the local search fusion path.',
             searchActions: [
               {
                 query: '常州市 医疗补贴',
@@ -57,7 +57,6 @@ test('policy loop uses the runtime-owned MCP default path instead of the removed
   assert.equal(decisionStep, 2);
   assert.equal(result.discoveredCandidates.length > 0, true);
   assert.equal(result.fetchedEvidence.length, 1);
-  assert.equal(result.fetchedEvidence[0]?.backend, 'search-mcp:fetch_url');
+  assert.equal(result.fetchedEvidence[0]?.backend, 'local-fetch-primary');
 });
-
 

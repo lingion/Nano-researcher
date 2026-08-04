@@ -4,9 +4,11 @@ import { Client } from '@modelcontextprotocol/sdk/client';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio';
 
 import type { FetchedPageRecord, KerryCleaningRecord } from '../fetch-fusion/types.js';
-import type { SearchDiscoveryRecord } from '../search-fusion/types.js';
+import { detectSuspectedReprint } from '../fetch-fusion/evidence-clues.js';
+import type { SearchDiscoveryRecord, AccessSourceGrade } from '../search-fusion/types.js';
 import type { FetchTool, SearchTool } from './tool-registry.js';
 import { withTimeout } from './reliability.ts';
+import { assertSafeNetworkTarget } from '../fetch-fusion/network-safety.js';
 
 export interface SearchMcpToolOptions {
   command?: string;
@@ -19,6 +21,9 @@ export interface SearchMcpToolOptions {
   engines?: string[];
   requestTimeoutMs?: number;
   closeTimeoutMs?: number;
+  connectTimeoutMs?: number;
+  createClient?: () => Client;
+  createTransport?: (options: ConstructorParameters<typeof StdioClientTransport>[0]) => StdioClientTransport;
 }
 
 const DEFAULT_SEARCH_LIMIT = 8;
@@ -65,6 +70,23 @@ function asStringArray(value: unknown): string[] | undefined {
   return strings.length ? strings : undefined;
 }
 
+const ACCESS_SOURCE_GRADES = new Set<AccessSourceGrade>([
+  'official_product',
+  'official_access',
+  'official_docs',
+  'official_announcement',
+  'official_github',
+  'credible_reporting',
+  'noise',
+  'corrupted',
+]);
+
+function asAccessSourceGrade(value: unknown): AccessSourceGrade | undefined {
+  return typeof value === 'string' && ACCESS_SOURCE_GRADES.has(value as AccessSourceGrade)
+    ? value as AccessSourceGrade
+    : undefined;
+}
+
 function mapSearchResult(query: string, item: Record<string, unknown>): SearchDiscoveryRecord {
   return {
     query,
@@ -76,9 +98,7 @@ function mapSearchResult(query: string, item: Record<string, unknown>): SearchDi
     quality_status: item.quality_status === 'green' || item.quality_status === 'yellow' ? item.quality_status : undefined,
     quality_reason: asString(item.quality_reason),
     filtered_count: typeof item.filtered_count === 'number' ? item.filtered_count : undefined,
-    access_source_grade: typeof item.access_source_grade === 'string'
-      ? item.access_source_grade as SearchDiscoveryRecord['access_source_grade']
-      : undefined,
+    access_source_grade: asAccessSourceGrade(item.access_source_grade),
     kerry_quality_status: typeof item.quality_status === 'string'
       ? item.quality_status as SearchDiscoveryRecord['kerry_quality_status']
       : typeof item.quality_reason === 'string'
@@ -120,7 +140,12 @@ function mapFetchResult(requestedUrl: string, structured: Record<string, unknown
     content: cleanedText,
     backend: 'search-mcp:fetch_url',
     evidence_clues: {
-      is_suspected_reprint: false,
+      is_suspected_reprint: detectSuspectedReprint({
+      requestedUrl,
+      finalUrl,
+      title,
+      content: cleanedText || rawText,
+    }),
       extracted_doc_no: docNo,
       potential_official_urls: officialUrls,
     },
@@ -142,8 +167,14 @@ export async function createSearchMcpTools(options: SearchMcpToolOptions = {}): 
     ...(options.providerConfigPath ? { SEARCH_MCP_PROVIDER_CONFIG_PATH: options.providerConfigPath } : {}),
   });
 
-  const client = new Client({ name: 'local-policy-agent', version: '0.1.0' });
-  const transport = new StdioClientTransport({
+  const client = options.createClient?.() ?? new Client({ name: 'local-policy-agent', version: '0.1.0' });
+  const transport = options.createTransport?.({
+    command,
+    args,
+    env,
+    cwd: options.cwd,
+    stderr: 'inherit',
+  }) ?? new StdioClientTransport({
     command,
     args,
     env,
@@ -151,23 +182,43 @@ export async function createSearchMcpTools(options: SearchMcpToolOptions = {}): 
     stderr: 'inherit',
   });
 
-  await client.connect(transport);
+  try {
+    await withTimeout(
+      client.connect(transport),
+      options.connectTimeoutMs ?? Number(process.env.LIVE_AUDIT_MCP_CONNECT_TIMEOUT_MS ?? 10_000),
+      'mcp:connect',
+    );
+  } catch (error) {
+    try {
+      await withTimeout(
+        transport.close(),
+        options.closeTimeoutMs ?? Number(process.env.LIVE_AUDIT_MCP_CLOSE_TIMEOUT_MS ?? 10_000),
+        'mcp:connect-cleanup',
+      );
+    } catch {
+      // Preserve the handshake failure; cleanup is best-effort on failed setup.
+    }
+    throw error;
+  }
 
   const searchLimit = options.searchLimit ?? DEFAULT_SEARCH_LIMIT;
   const fetchMaxChars = options.fetchMaxChars ?? DEFAULT_FETCH_MAX_CHARS;
   const engines = options.engines ?? DEFAULT_ENGINES;
+  let closed = false;
 
   return {
     searchTool: {
-      search: async (query: string) => {
-        const result = await withTimeout(client.callTool({
-          name: 'search_auto',
-          arguments: {
-            query,
-            limit: searchLimit,
-            engines,
-          },
-        }), options.requestTimeoutMs ?? Number(process.env.LIVE_AUDIT_SEARCH_TIMEOUT_MS ?? 45_000), `search:${query}`);
+      search: async (query: string, signal?: AbortSignal) => {
+        const result = await withTimeout(
+          (requestSignal) => client.callTool({
+            name: 'search_auto',
+            arguments: {
+              query,
+              limit: searchLimit,
+              engines,
+            },
+          }, undefined, { signal: requestSignal }),
+          options.requestTimeoutMs ?? Number(process.env.LIVE_AUDIT_SEARCH_TIMEOUT_MS ?? 45_000), `search:${query}`, undefined, signal);
         const structured = getStructuredContent(result);
         const items = Array.isArray(structured.results) ? structured.results : [];
         return items
@@ -176,19 +227,24 @@ export async function createSearchMcpTools(options: SearchMcpToolOptions = {}): 
       },
     },
     fetchTool: {
-      fetch: async (url: string) => {
-        const result = await withTimeout(client.callTool({
-          name: 'fetch_url',
-          arguments: {
-            url,
-            maxChars: fetchMaxChars,
-          },
-        }), options.requestTimeoutMs ?? Number(process.env.LIVE_AUDIT_FETCH_TIMEOUT_MS ?? 45_000), `fetch:${url}`);
+      fetch: async (url: string, signal?: AbortSignal) => {
+        assertSafeNetworkTarget(url);
+        const result = await withTimeout(
+          (requestSignal) => client.callTool({
+            name: 'fetch_url',
+            arguments: {
+              url,
+              maxChars: fetchMaxChars,
+            },
+          }, undefined, { signal: requestSignal }),
+          options.requestTimeoutMs ?? Number(process.env.LIVE_AUDIT_FETCH_TIMEOUT_MS ?? 45_000), `fetch:${url}`, undefined, signal);
         const structured = getStructuredContent(result);
         return mapFetchResult(url, structured);
       },
     },
     close: async () => {
+      if (closed) return;
+      closed = true;
       await withTimeout(transport.close(), options.closeTimeoutMs ?? Number(process.env.LIVE_AUDIT_MCP_CLOSE_TIMEOUT_MS ?? 10_000), 'mcp:close');
     },
   };

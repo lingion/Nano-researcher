@@ -14,6 +14,17 @@ test('termination policy stops immediately when the agent explicitly finalizes',
   assert.equal(result.interruptedByGate, false);
 });
 
+test('termination policy stops immediately for the final summary decision', () => {
+  const result = assessLoopTermination({
+    currentIteration: 2,
+    maxIterations: 4,
+    agentDecisionType: 'summarize_and_stop',
+  });
+
+  assert.equal(result.shouldBreak, true);
+  assert.equal(result.interruptedByGate, false);
+});
+
 test('termination policy returns gate interruption details when max iterations are reached', () => {
   const result = assessLoopTermination({
     currentIteration: 3,
@@ -31,6 +42,7 @@ test('termination policy returns gate interruption details when max iterations a
   assert.equal(result.finalQualityReason, 'WAF administrative wall');
 });
 
+
 test('termination policy keeps the loop running when no stop condition has been met', () => {
   const result = assessLoopTermination({
     currentIteration: 2,
@@ -42,4 +54,16 @@ test('termination policy keeps the loop running when no stop condition has been 
   assert.equal(result.interruptedByGate, false);
   assert.equal(result.finalQualityStatus, undefined);
   assert.equal(result.finalQualityReason, undefined);
+});
+
+test('termination policy preserves an explicit finalize decision during post-convergence review', () => {
+  const result = assessLoopTermination({
+    currentIteration: 2,
+    maxIterations: 4,
+    agentDecisionType: 'finalize',
+    convergencePhase: 'post_convergence_review',
+  });
+
+  assert.equal(result.shouldBreak, true);
+  assert.equal(result.interruptedByGate, false);
 });

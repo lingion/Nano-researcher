@@ -1,10 +1,10 @@
 # local-policy-agent
 
-Standalone local policy research runtime with the following core properties:
+Standalone AI product and access radar runtime with the following core properties:
 
-- NanoClaw-style live-audit orchestration core
+- NanoClaw-style live-radar orchestration core
 - default **MCP-first / MCP-only** search and fetch backend
-- prompt-driven evidence judgment and convergence control
+- prompt-driven product, release, access, waitlist, and eligibility evidence judgment
 - final termination via `summarize_and_stop`, not endless search loops
 
 See the Chinese documentation here:
@@ -14,16 +14,21 @@ See the Chinese documentation here:
 
 ## 1. What this repository does
 
-This repository runs a policy research loop:
+The default product is the generic autonomous research agent. It accepts a
+research question, lets an LLM choose search/fetch/review/finish actions, and
+returns source-backed results through the direct CLI, HTTP, or MCP host.
+
+The previous policy and early-access runtime remains available as the explicit
+`legacy-audit` compatibility command during migration.
+
+This repository runs an AI product and access radar loop:
 
 1. the model decides whether the next step should be search, fetch, review, or summarize
-2. search discovers candidate URLs only
+2. search discovers candidate product, announcement, documentation, or application URLs only
 3. fetch retrieves page evidence only
 4. fetched evidence is classified as `GOLD_STANDARD`, `SILVER_STANDARD`, or `NOISE`
-5. once enough validated evidence is collected, the runtime enters a two-step convergence flow:
-   - `post_convergence_review`
-   - `final_summary`
-6. the final output is a summary package rather than more search churn
+5. the model separates product existence from current access eligibility
+6. the final output distinguishes release, beta, preview, waitlist, invitation, region limits, and application paths
 
 ---
 
@@ -180,6 +185,8 @@ Optional Search MCP override:
 Notes:
 
 - live runs require an OpenAI-compatible NanoClaw gateway
+- `NANOCLAW_API_KEY` must be injected by the external runtime environment; never commit or copy a live credential into source, tests, reports, or logs
+- local `.env.*` files are ignored and are only a developer convenience for manual runs
 - the Search MCP worker is vendored inside the repo and used by default
 - in normal usage, you do not need to switch search backend flags
 
@@ -273,7 +280,7 @@ pnpm live-audit
 Example:
 
 ```bash
-LIVE_AUDIT_TOPIC='常州市 医疗补贴' \
+LIVE_AUDIT_TOPIC='最新 AI 模型、Agent、API、Beta/Preview、Waitlist 和内测资格' \
 LIVE_AUDIT_MAX_ITERATIONS=10 \
 POLICY_TARGET_VALIDATED_COUNT=4 \
 LIVE_AUDIT_DEBUG=1 \
@@ -313,7 +320,7 @@ Recently verified outcomes include:
   - `post_convergence_review`
   - `final_summary`
   - `summarize_and_stop`
-- the `常州市 医疗补贴` live audit now reaches `summarize_and_stop`
+- the latest AI product/access radar reaches `summarize_and_stop` with release and eligibility evidence
 - it no longer gets stuck at premature `finalize`
 
 ---

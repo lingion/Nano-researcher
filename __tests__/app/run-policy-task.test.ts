@@ -5,7 +5,116 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { buildPolicyPrompt } from '../../src/policy-task/prompt-builder.ts';
-import { runPolicyTask } from '../../src/app/run-policy-task.ts';
+import { runPolicyTask, runPolicyTaskLoop } from '../../src/app/run-policy-task.ts';
+import type { BrowserAdapter } from '../../src/fetch-fusion/browser-fetch.ts';
+
+test('policy loop uses Browser fallback after a weak MCP fetch result', async () => {
+  let decisionStep = 0;
+  let browserCalls = 0;
+  const browserAdapter: BrowserAdapter = {
+    render: async (url) => {
+      browserCalls += 1;
+      return {
+        finalUrl: url,
+        title: 'Rendered access page',
+        text: '申请体验 developer preview 2026-07-20 ' + '正文'.repeat(80),
+      };
+    },
+  };
+
+  const result = await runPolicyTaskLoop(
+    { topic: 'AI access' },
+    {
+      maxIterations: 3,
+      enableBrowser: true,
+      ...({ browserAdapter } as Record<string, unknown>),
+      createToolset: async () => ({
+        searchTool: {
+          search: async (query) => [{
+            query,
+            title: 'Candidate',
+            url: 'https://example.com/access',
+            snippet: 'Candidate',
+            source: 'search-mcp',
+          }],
+        },
+        fetchTool: {
+          fetch: async (url) => ({
+            requestedUrl: url,
+            finalUrl: url,
+            title: 'JavaScript required',
+            content: 'Please enable JavaScript',
+            backend: 'search-mcp:fetch_url',
+          }),
+        },
+      }),
+      askAgent: async (state) => {
+        decisionStep += 1;
+        if (decisionStep === 1) {
+          return {
+            decision: 'continue_search',
+            reasoning: 'Find a candidate.',
+            searchActions: [{ query: 'AI access', why: 'find candidate' }],
+            fetchActions: [],
+            uncertainties: [],
+            discardedLeads: [],
+          };
+        }
+        if (decisionStep === 2) {
+          return {
+            decision: 'continue_fetch',
+            reasoning: 'Fetch candidate evidence.',
+            searchActions: [],
+            fetchActions: [{
+              url: state.discoveredCandidates[0]?.url ?? 'https://example.com/access',
+              why: 'fetch candidate',
+            }],
+            uncertainties: [],
+            discardedLeads: [],
+          };
+        }
+        return {
+          decision: 'summarize_and_stop',
+          reasoning: 'Review rendered evidence.',
+          searchActions: [],
+          fetchActions: [],
+          uncertainties: [],
+          discardedLeads: [],
+        };
+      },
+    },
+  );
+
+  assert.equal(decisionStep, 3);
+  assert.equal(browserCalls, 1);
+  assert.equal(result.fetchedEvidence[0]?.backend, 'playwright');
+  assert.match(result.fetchedEvidence[0]?.content ?? '', /developer preview/);
+});
+test('policy loop does not print search query or rationale to stdout', async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, 'log', (...args: unknown[]) => {
+    lines.push(args.map((value) => String(value)).join(' '));
+  });
+
+  await runPolicyTaskLoop(
+    { topic: 'stdout redaction' },
+    {
+      maxIterations: 1,
+      askAgent: async () => ({
+        decision: 'continue_search',
+        reasoning: 'synthetic reasoning',
+        searchActions: [{ query: 'SYNTHETIC_SEARCH_QUERY', why: 'SYNTHETIC_SEARCH_WHY' }],
+        fetchActions: [],
+        uncertainties: [],
+        discardedLeads: [],
+      }),
+      searchTool: { search: async () => [] },
+      fetchTool: { fetch: async () => ({}) as never },
+    },
+  );
+
+  assert.doesNotMatch(lines.join('\\n'), /SYNTHETIC_SEARCH_QUERY|SYNTHETIC_SEARCH_WHY/);
+});
 
 test('thin host runtime files exist', () => {
   const files = [
@@ -28,203 +137,46 @@ test('policy prompt forbids code-side business judgment', () => {
   assert.match(prompt, /Fetch extracts page evidence only/i);
 });
 
-test('runPolicyTask feeds official nationwide providers into the default auto search layer for policy discovery', async () => {
+test('runPolicyTask preserves injected official provider candidates in the search layer', async () => {
   const outputDir = await mkdtemp(path.join(os.tmpdir(), 'local-policy-agent-official-default-'));
-  const original = (globalThis as { WebSearch?: unknown }).WebSearch;
-  const calls: Array<{ query: string; auto_mode?: string; engines?: string[] }> = [];
-
-  (globalThis as {
-    WebSearch?: (input: { query: string; auto_mode?: string; engines?: string[] }) => Promise<Array<{
-      title: string;
-      url: string;
-      snippet: string;
-      source: string;
-    }>>;
-  }).WebSearch = async (input) => {
-    calls.push(input);
-    return [
-      {
-        title: '一般搜索结果',
-        url: 'https://example.gov.cn/policy',
-        snippet: '政策摘要',
-        source: 'search_auto',
-      },
-    ];
-  };
-
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input: string | URL | Request) => {
-    const url = String(input);
-
-    if (url.includes('fwfx.ndrc.gov.cn/api/query')) {
-      return new Response(JSON.stringify({
-        ok: true,
-        data: {
-          resultList: [
-            {
-              title: '国家发展改革委招商政策解读',
-              url: 'https://www.ndrc.gov.cn/xxgk/jd/jd/202601/t20260112_1403201.html',
-              summary: '招商政策线索',
-              docDate: '2026-01-12',
-            },
-          ],
-        },
-      }));
-    }
-
-    if (url.includes('www.miit.gov.cn/search-front-server/api/search/info')) {
-      return new Response(JSON.stringify({
-        success: true,
-        data: {
-          searchResult: {
-            dataResults: [
-              {
-                groupData: [
-                  {
-                    data: {
-                      title_text: '工业和信息化部高新区政策发布会',
-                      url: '/xwfb/xwfbh/bxwfbh/art/2026/art_1645f32c491a452489025bdb9430f490.html',
-                      content: '高新区和科技创新政策内容',
-                      deploytime: '2026-05-29 09:00:00',
-                    },
-                  },
-                ],
-              },
-            ],
-          },
-        },
-      }));
-    }
-
-    if (url.includes('sousuoht.www.gov.cn/athena/forward/2B22E8E39E850E17F95A016A74FCB6B673336FA8B6FEC0E2955907EF9AEE06BE')) {
-      return new Response(JSON.stringify({
-        resultCode: { code: 200 },
-        result: {
-          data: {
-            middle: {
-              list: [
-                {
-                  title: '国务院关于上海市城市总体规划的批复',
-                  title_no_tag: '国务院关于上海市城市总体规划的批复',
-                  url: 'http://www.gov.cn/zhengce/content/2017-12/25/content_5250134.htm',
-                  summary: '国务院原则同意《上海市城市总体规划（2017—2035年）》。',
-                  pubcode: '国函〔2017〕147号',
-                  time: '2017-12-25 16:53:00',
-                },
-              ],
-            },
-          },
-        },
-      }));
-    }
-
-    return new Response('<html><body></body></html>');
-  };
-
-  try {
-    const result = await runPolicyTask(
-      { topic: '科技招商政策' },
-      {
-        outputDir,
-        callModel: async () => JSON.stringify({
-          decision: 'continue_search',
-          reasoning: 'Need official candidate URLs first.',
-          searchActions: [{ query: '科技招商政策 site:gov.cn', why: 'find official policy pages' }],
-          fetchActions: [],
-          discardedLeads: [],
-          uncertainties: ['No fetched evidence yet'],
-        }),
-      },
-    );
-
-    const audit = JSON.parse(await readFile(result.resultAuditPath, 'utf8')) as {
-      candidates?: Array<{ source?: string }>;
-    };
-
-    assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0], {
-      query: '科技招商政策 site:gov.cn',
-      auto_mode: 'full',
-      engines: ['baidu', 'sogou', 'bing', 'bing_news', 'sina_news', '163_news'],
-    });
-    assert.equal(audit.candidates?.some((item) => item.source === 'ndrc-policy-search'), true);
-    assert.equal(audit.candidates?.some((item) => item.source === 'miit-policy-search'), true);
-    assert.equal(audit.candidates?.some((item) => item.source === 'gov-cn-policy-library-search'), true);
-    assert.equal(audit.candidates?.some((item) => item.source === 'search_auto'), true);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (original === undefined) {
-      delete (globalThis as { WebSearch?: unknown }).WebSearch;
-    } else {
-      (globalThis as { WebSearch?: unknown }).WebSearch = original;
-    }
-  }
+  const calls: string[] = [];
+  const candidates = [
+    { title: '国家发展改革委招商政策解读', url: 'https://www.ndrc.gov.cn/policy', snippet: '招商政策线索', source: 'ndrc-policy-search' },
+    { title: '工业和信息化部高新区政策发布会', url: 'https://www.miit.gov.cn/policy', snippet: '高新区和科技创新政策内容', source: 'miit-policy-search' },
+    { title: '国务院政策库', url: 'https://www.gov.cn/policy', snippet: '政策内容', source: 'gov-cn-policy-library-search' },
+    { title: '一般搜索结果', url: 'https://example.gov.cn/policy', snippet: '政策摘要', source: 'search_auto' },
+  ];
+  const result = await runPolicyTask({ topic: '科技招商政策' }, {
+    outputDir,
+    callModel: async () => JSON.stringify({ decision: 'continue_search', reasoning: 'Need official candidate URLs first.', searchActions: [{ query: '科技招商政策 site:gov.cn', why: 'find official policy pages' }], fetchActions: [], discardedLeads: [], uncertainties: [] }),
+    createToolset: async () => ({
+      searchTool: { search: async (query) => { calls.push(query); return candidates; } },
+      fetchTool: { fetch: async (url) => ({ requestedUrl: url, finalUrl: url, title: '', content: '', backend: 'test' }) },
+    }),
+  });
+  const audit = JSON.parse(await readFile(result.resultAuditPath, 'utf8')) as { candidates?: Array<{ source?: string }> };
+  assert.deepEqual(calls, ['科技招商政策 site:gov.cn']);
+  for (const source of ['ndrc-policy-search', 'miit-policy-search', 'gov-cn-policy-library-search', 'search_auto']) assert.equal(audit.candidates?.some((item) => item.source === source), true);
 });
 
-test('runPolicyTask default search path rewrites junk query candidates to the mapped Kerry status without drift', async () => {
+test('runPolicyTask preserves injected Kerry status for junk query candidates without drift', async () => {
   const outputDir = await mkdtemp(path.join(os.tmpdir(), 'local-policy-agent-default-status-lock-'));
-  const original = (globalThis as { WebSearch?: unknown }).WebSearch;
-
-  (globalThis as {
-    WebSearch?: (input: { query: string; auto_mode?: string; engines?: string[] }) => Promise<Array<{
-      title: string;
-      url: string;
-      snippet: string;
-      source: string;
-    }>>;
-  }).WebSearch = async () => [
-    {
-      title: '招聘租房广告大合集',
-      url: 'https://example.com/jobs',
-      snippet: '招聘 租房 广告',
-      source: 'search_auto',
-    },
-    {
-      title: '酒店机票特惠',
-      url: 'https://example.com/travel',
-      snippet: '酒店 机票 优惠',
-      source: 'search_auto',
-    },
-  ];
-
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(JSON.stringify({ data: { resultList: [] }, success: true, result: { data: { middle: { list: [] } } } }));
-
-  try {
-    const result = await runPolicyTask(
-      { topic: '招聘租房广告' },
-      {
-        outputDir,
-        callModel: async () => JSON.stringify({
-          decision: 'continue_search',
-          reasoning: 'Need candidate URLs first.',
-          searchActions: [{ query: '招聘租房广告', why: 'trigger default search path' }],
-          fetchActions: [],
-          discardedLeads: [],
-          uncertainties: ['No fetched evidence yet'],
-        }),
-      },
-    );
-
-    const audit = JSON.parse(await readFile(result.resultAuditPath, 'utf8')) as {
-      candidates?: Array<{ source?: string; kerry_quality_status?: string; kerry_quality_reason?: string }>;
-    };
-
-    const autoCandidates = audit.candidates?.filter((item) => item.source === 'search_auto') ?? [];
-    assert.equal(autoCandidates.length, 2);
-    assert.deepEqual(
-      autoCandidates.map((item) => item.kerry_quality_status),
-      ['junk_heavy', 'junk_heavy'],
-    );
-    assert.equal(autoCandidates.every((item) => /commercial noise|intent mismatch/i.test(item.kerry_quality_reason ?? '')), true);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (original === undefined) {
-      delete (globalThis as { WebSearch?: unknown }).WebSearch;
-    } else {
-      (globalThis as { WebSearch?: unknown }).WebSearch = original;
-    }
-  }
+  const result = await runPolicyTask({ topic: '招聘租房广告' }, {
+    outputDir,
+    callModel: async () => JSON.stringify({ decision: 'continue_search', reasoning: 'Need candidate URLs first.', searchActions: [{ query: '招聘租房广告', why: 'trigger injected search path' }], fetchActions: [], discardedLeads: [], uncertainties: [] }),
+    createToolset: async () => ({
+      searchTool: { search: async () => [
+        { title: '招聘租房广告大合集', url: 'https://example.com/jobs', snippet: '招聘 租房 广告', source: 'search_auto', kerry_quality_status: 'junk_heavy', kerry_quality_reason: 'commercial noise' },
+        { title: '酒店机票特惠', url: 'https://example.com/travel', snippet: '酒店 机票 优惠', source: 'search_auto', kerry_quality_status: 'junk_heavy', kerry_quality_reason: 'intent mismatch' },
+      ] },
+      fetchTool: { fetch: async (url) => ({ requestedUrl: url, finalUrl: url, title: '', content: '', backend: 'test' }) },
+    }),
+  });
+  const audit = JSON.parse(await readFile(result.resultAuditPath, 'utf8')) as { candidates?: Array<{ source?: string; kerry_quality_status?: string; kerry_quality_reason?: string }> };
+  const autoCandidates = audit.candidates?.filter((item) => item.source === 'search_auto') ?? [];
+  assert.equal(autoCandidates.length, 2);
+  assert.deepEqual(autoCandidates.map((item) => item.kerry_quality_status), ['junk_heavy', 'junk_heavy']);
+  assert.equal(autoCandidates.every((item) => /commercial noise|intent mismatch/i.test(item.kerry_quality_reason ?? '')), true);
 });
 
 test('runPolicyTask writes a separate debug trace artifact with prompt model tool and state events', async () => {
@@ -278,6 +230,30 @@ test('runPolicyTask writes a separate debug trace artifact with prompt model too
   assert.equal(debugTrace.events?.some((event) => event.type === 'model.config'), true);
   assert.equal(debugTrace.events?.some((event) => event.type === 'tool.search.request'), true);
   assert.equal(debugTrace.events?.some((event) => event.type === 'state.updated'), true);
+});
+
+test('runPolicyTask redacts failure messages from the separate debug trace artifact', async () => {
+  const outputDir = await mkdtemp(path.join(os.tmpdir(), 'local-policy-agent-debug-failure-redaction-'));
+
+  await assert.rejects(
+    () => runPolicyTask(
+      { topic: '科技招商政策' },
+      {
+        outputDir,
+        debug: true,
+        callModel: async () => {
+          throw new Error('SYNTHETIC_UPSTREAM_MESSAGE');
+        },
+        searchTool: { search: async () => [] },
+        fetchTool: { fetch: async () => ({}) as never },
+      },
+    ),
+    /SYNTHETIC_UPSTREAM_MESSAGE/,
+  );
+
+  const debugTrace = await readFile(path.join(outputDir, 'debug-trace.json'), 'utf8');
+  assert.doesNotMatch(debugTrace, /SYNTHETIC_UPSTREAM_MESSAGE/);
+  assert.match(debugTrace, /"name"\s*:\s*"Error"/);
 });
 
 test('runPolicyTask records model failure details in the separate debug trace artifact', async () => {

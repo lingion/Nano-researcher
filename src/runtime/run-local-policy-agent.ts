@@ -7,22 +7,27 @@ import { askRealClaudeDecision, type DebugEvent } from './ask-real-claude.js';
 export async function runLocalPolicyAgentIteration(
   state: PolicyAgentState,
   deps: {
-    askAgent?: (state: PolicyAgentState) => Promise<PolicyAgentDecision>;
-    callModel?: (prompt: string) => Promise<string>;
+    askAgent?: (state: PolicyAgentState, signal?: AbortSignal) => Promise<PolicyAgentDecision>;
+    callModel?: (prompt: string, signal?: AbortSignal) => Promise<string>;
     searchTool: SearchTool;
     fetchTool: FetchTool;
     onDebugEvent?: (event: DebugEvent) => void;
+    onRawModelOutput?: (rawText: string) => void | Promise<void>;
+    signal?: AbortSignal;
   },
 ): Promise<PolicyAgentState & { decision: PolicyAgentDecision }> {
   const result = await runOneSessionIteration(state, {
     ...deps,
     askAgent:
-      deps.askAgent ??
-      ((currentState) =>
-        askRealClaudeDecision(currentState, {
-          callModel: deps.callModel,
-          onDebugEvent: deps.onDebugEvent,
-        })),
+      deps.askAgent
+        ? (currentState) => deps.askAgent!(currentState, deps.signal)
+        : (currentState) => askRealClaudeDecision(currentState, {
+            callModel: deps.callModel,
+            onDebugEvent: deps.onDebugEvent,
+            onRawModelOutput: deps.onRawModelOutput,
+            signal: deps.signal,
+          }),
+    signal: deps.signal,
   });
 
   return {

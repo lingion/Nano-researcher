@@ -15,10 +15,9 @@ export function assessLoopTermination(input: {
   agentDecisionType?: string;
   convergencePhase?: 'post_convergence_review' | 'final_summary';
 }): TerminationAssessment {
-  if (
-    (input.agentDecisionType === 'finalize' || input.agentDecisionType === 'stop')
-    && input.convergencePhase !== 'post_convergence_review'
-  ) {
+  if (input.agentDecisionType === 'finalize'
+    || input.agentDecisionType === 'stop'
+    || input.agentDecisionType === 'summarize_and_stop') {
     return {
       shouldBreak: true,
       interruptedByGate: false,

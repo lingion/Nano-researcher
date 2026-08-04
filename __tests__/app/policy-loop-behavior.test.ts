@@ -5,6 +5,166 @@ import { runPolicyTaskLoop } from '../../src/app/run-policy-task.ts';
 import type { PolicyAgentDecision } from '../../src/policy-task/output-schema.ts';
 import type { PolicyAgentState } from '../../src/policy-task/state-schema.ts';
 
+test('policy loop marks max-iteration continuation as bounded interruption without rewriting the model decision', async () => {
+  const result = await runPolicyTaskLoop(
+    { topic: 'bounded continuation' },
+    {
+      maxIterations: 1,
+      askAgent: async () => ({
+        decision: 'continue_search',
+        reasoning: 'Need more evidence.',
+        searchActions: [],
+        fetchActions: [],
+        uncertainties: ['insufficient evidence'],
+        discardedLeads: [],
+      }),
+      searchTool: { search: async () => [] },
+      fetchTool: { fetch: async () => { throw new Error('must not fetch'); } },
+    },
+  );
+
+  assert.equal(result.decision.decision, 'continue_search');
+  assert.equal(result.loop_interrupted_by_gate, true);
+  assert.equal(result.final_quality_status, undefined);
+});
+
+test('policy loop writes model evidence assessments back to matching fetched pages', async () => {
+  const decisions: PolicyAgentDecision[] = [
+    {
+      decision: 'continue_fetch',
+      reasoning: 'fetch evidence first',
+      searchActions: [],
+      fetchActions: [{ url: 'https://example.test/evidence', why: 'inspect evidence' }],
+      uncertainties: [],
+      discardedLeads: [],
+    },
+    {
+      decision: 'stop',
+      reasoning: 'assessment complete',
+      searchActions: [],
+      fetchActions: [],
+      evidenceAssessments: [{
+        url: 'https://example.test/evidence',
+        qualityCategory: 'SILVER_STANDARD',
+        validationReason: 'official announcement with a current access signal',
+      }],
+      uncertainties: [],
+      discardedLeads: [],
+    },
+  ];
+
+  const result = await runPolicyTaskLoop(
+    { topic: 'assessment persistence' },
+    {
+      maxIterations: 2,
+      askAgent: async () => decisions.shift()!,
+      searchTool: { search: async () => [] },
+      fetchTool: {
+        fetch: async (url) => ({
+          requestedUrl: url,
+          finalUrl: url,
+          title: 'Evidence page',
+          content: 'Official announcement',
+          backend: 'fixture',
+        }),
+      },
+    },
+  );
+
+  assert.equal(result.fetchedEvidence[0]?.qualityCategory, 'SILVER_STANDARD');
+  assert.equal(result.fetchedEvidence[0]?.validationReason, 'official announcement with a current access signal');
+});
+test('policy loop preserves the primary error when cleanup also fails', async () => {
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const cleanupError = new Error('close failed');
+  const primaryError = new Error('model failed');
+
+  await assert.rejects(
+    () => runPolicyTaskLoop(
+      { topic: 'cleanup failure with primary error' },
+      {
+        createToolset: async () => ({
+          searchTool: { search: async () => [] },
+          fetchTool: { fetch: async () => { throw new Error('unexpected fetch'); } },
+          close: async () => { throw cleanupError; },
+        }),
+        askAgent: async () => { throw primaryError; },
+        onDebugEvent: (event) => events.push(event),
+      },
+    ),
+    (error: unknown) => error === primaryError,
+  );
+
+  assert.equal(events.some((event) => event.type === 'agent.failure'), true);
+  assert.equal(events.some((event) => event.type === 'state.updated'), true);
+  const cleanupEvent = events.find((event) => event.type === 'mcp.cleanup.failure');
+  const cleanupProjection = cleanupEvent?.payload.cleanupError as Record<string, unknown> | undefined;
+  const originalProjection = cleanupEvent?.payload.originalError as Record<string, unknown> | undefined;
+  assert.equal(cleanupProjection?.name, 'Error');
+  assert.equal(originalProjection?.name, 'Error');
+  for (const projection of [cleanupProjection, originalProjection]) {
+    assert.equal('message' in (projection ?? {}), false);
+    assert.equal('stack' in (projection ?? {}), false);
+    assert.equal('diagnostics' in (projection ?? {}), false);
+  }
+});
+
+test('policy loop exposes cleanup failure when no primary error exists', async () => {
+  const cleanupError = new Error('close failed without primary error');
+  let closeCalls = 0;
+
+  await assert.rejects(
+    () => runPolicyTaskLoop(
+      { topic: 'cleanup failure without primary error' },
+      {
+        createToolset: async () => ({
+          searchTool: { search: async () => [] },
+          fetchTool: { fetch: async () => { throw new Error('unexpected fetch'); } },
+          close: async () => {
+            closeCalls += 1;
+            throw cleanupError;
+          },
+        }),
+        askAgent: async () => ({
+          decision: 'stop',
+          reasoning: 'done',
+          searchActions: [],
+          fetchActions: [],
+          uncertainties: [],
+          discardedLeads: [],
+        }),
+      },
+    ),
+    (error: unknown) => error === cleanupError,
+  );
+
+  assert.equal(closeCalls, 1);
+});
+
+test('policy loop closes an injected owned toolset exactly once', async () => {
+  let closeCalls = 0;
+  const result = await runPolicyTaskLoop(
+    { topic: 'cleanup idempotence' },
+    {
+      createToolset: async () => ({
+        searchTool: { search: async () => [] },
+        fetchTool: { fetch: async () => { throw new Error('unexpected fetch'); } },
+        close: async () => { closeCalls += 1; },
+      }),
+      askAgent: async () => ({
+        decision: 'stop',
+        reasoning: 'done',
+        searchActions: [],
+        fetchActions: [],
+        uncertainties: [],
+        discardedLeads: [],
+      }),
+    },
+  );
+
+  assert.equal(result.decision.decision, 'stop');
+  assert.equal(closeCalls, 1);
+});
 test('policy loop replays search to reprint fetch to official fetch before finalizing', async () => {
   const seenStates: PolicyAgentState[] = [];
   const searchCalls: string[] = [];
@@ -770,12 +930,47 @@ test('policy loop interrupts at maxIterations when blocked retries would otherwi
   assert.deepEqual(searchCalls, ['绥化企业减免', '绥政发〔2026〕7号']);
   assert.deepEqual(fetchCalls, ['https://www.chinatax.com/news.html']);
   assert.equal(result.currentIteration, 3);
-  assert.equal(result.loop_interrupted_by_gate, undefined);
+  assert.equal(result.loop_interrupted_by_gate, true);
   assert.equal(result.final_quality_status, undefined);
-  assert.equal(result.final_quality_reason, undefined);
+  assert.equal(result.final_quality_reason, 'Maximum policy iterations reached before the model produced a terminal decision.');
 });
 
 
+test('policy loop aborts an in-flight iteration without entering the next iteration', async () => {
+  const controller = new AbortController();
+  let askCalls = 0;
+  let closeCalls = 0;
+  const abortReason = new Error('policy loop aborted');
+  let rejectAsk: ((error: unknown) => void) | undefined;
+
+  const pending = runPolicyTaskLoop(
+    { topic: 'external abort boundary' },
+    {
+      maxIterations: 3,
+      signal: controller.signal,
+      askAgent: async (_state, signal) => {
+        askCalls += 1;
+        return await new Promise<never>((_resolve, reject) => {
+          rejectAsk = reject;
+          if (signal?.aborted) reject(signal.reason);
+          else signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+      createToolset: async () => ({
+        searchTool: { search: async () => [] },
+        fetchTool: { fetch: async () => { throw new Error('unexpected fetch'); } },
+        close: async () => { closeCalls += 1; },
+      }),
+    },
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort(abortReason);
+  rejectAsk?.(abortReason);
+  await assert.rejects(pending, (error: unknown) => error === abortReason);
+  assert.equal(askCalls, 1);
+  assert.equal(closeCalls, 1);
+});
 test('policy loop preserves a model summarize_and_stop decision without fetched evidence', async () => {
   const decision: PolicyAgentDecision = {
     decision: 'summarize_and_stop',
@@ -825,4 +1020,80 @@ test('policy loop preserves model continuation without target shortfall gates', 
   assert.equal(result.decision.decision, 'continue_fetch');
   assert.equal(result.final_quality_status, undefined);
   assert.equal('insufficient_target_count' in result, false);
+});
+
+test('policy loop exposes targetHotspotCount on the first model-visible state and preserves it across turns', async () => {
+  const seenStates: PolicyAgentState[] = [];
+  let turn = 0;
+
+  const result = await runPolicyTaskLoop(
+    { topic: 'target metadata propagation' },
+    {
+      maxIterations: 2,
+      targetHotspotCount: 7,
+      targetValidatedEvidenceCount: 3,
+      askAgent: async (state) => {
+        seenStates.push(structuredClone(state));
+        turn += 1;
+        return turn === 1
+          ? { decision: 'continue_search', reasoning: 'search', searchActions: [], fetchActions: [], uncertainties: [], discardedLeads: [] }
+          : { decision: 'stop', reasoning: 'model stop', searchActions: [], fetchActions: [], uncertainties: [], discardedLeads: [] };
+      },
+      searchTool: { search: async () => [] },
+      fetchTool: { fetch: async () => { throw new Error('must not fetch'); } },
+    },
+  );
+
+  assert.equal(seenStates[0]?.targetHotspotCount, 7);
+  assert.equal(seenStates[0]?.targetValidatedEvidenceCount, 3);
+  assert.equal(seenStates[1]?.targetHotspotCount, 7);
+  assert.equal(seenStates[1]?.targetValidatedEvidenceCount, 3);
+  assert.equal(result.targetHotspotCount, 7);
+  assert.equal(result.targetValidatedEvidenceCount, 3);
+  assert.equal(result.decision.decision, 'stop');
+});
+
+test('policy loop does not mark empty initial evidence as post-convergence', async () => {
+  const seenStates: PolicyAgentState[] = [];
+  let turn = 0;
+
+  await runPolicyTaskLoop(
+    { topic: 'empty initial evidence phase' },
+    {
+      maxIterations: 2,
+      targetValidatedEvidenceCount: 0,
+      askAgent: async (state) => {
+        seenStates.push(structuredClone(state));
+        turn += 1;
+        return turn === 1
+          ? { decision: 'continue_search', reasoning: 'Need discovery before convergence review.', searchActions: [], fetchActions: [], uncertainties: ['No evidence yet'], discardedLeads: [] }
+          : { decision: 'stop', reasoning: 'Stop for regression test.', searchActions: [], fetchActions: [], uncertainties: [], discardedLeads: [] };
+      },
+      searchTool: { search: async () => [] },
+      fetchTool: { fetch: async () => { throw new Error('must not fetch'); } },
+    },
+  );
+
+  assert.equal(seenStates[0]?.convergencePhase, undefined);
+  assert.equal(seenStates[1]?.convergencePhase, undefined);
+});
+
+test('policy loop defaults target metadata without changing legacy model decisions', async () => {
+  const result = await runPolicyTaskLoop(
+    { topic: 'legacy target metadata compatibility' },
+    {
+      maxIterations: 1,
+      askAgent: async (state) => {
+        assert.equal(state.targetHotspotCount, 0);
+        assert.equal(state.targetValidatedEvidenceCount, 0);
+        return { decision: 'stop', reasoning: 'model stop', searchActions: [], fetchActions: [], uncertainties: [], discardedLeads: [] };
+      },
+      searchTool: { search: async () => [] },
+      fetchTool: { fetch: async () => { throw new Error('must not fetch'); } },
+    },
+  );
+
+  assert.equal(result.decision.decision, 'stop');
+  assert.equal(result.targetHotspotCount, 0);
+  assert.equal(result.targetValidatedEvidenceCount, 0);
 });

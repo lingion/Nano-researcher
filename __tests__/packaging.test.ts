@@ -22,7 +22,21 @@ test('package exposes offline fixture regression and portable start scripts', ()
   const packageJson = readJson<{ scripts?: Record<string, string> }>('package.json');
 
   assert.equal(packageJson.scripts?.['test:fixture'], 'tsx --test __tests__/fixtures/golden-live-audit.test.ts');
-  assert.equal(packageJson.scripts?.start, 'pnpm live-audit');
+  assert.equal(packageJson.scripts?.start, 'pnpm generic-agent');
+  assert.equal(packageJson.scripts?.['legacy-audit'], 'tsx src/app/run-live-audit.ts');
+});
+
+test('live credentials stay externally injected and local secret files stay untracked', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const gitignore = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8');
+  const trackedSecretFiles = execFileSync('git', ['ls-files', '--', '.env.live', '.env'], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+  });
+
+  assert.match(readme, /must be injected by the external runtime environment/i);
+  assert.match(gitignore, /^\.env\.\*$/m);
+  assert.equal(trackedSecretFiles.trim(), '');
 });
 
 test('git-tracked source includes workspace modules required by live audit', () => {

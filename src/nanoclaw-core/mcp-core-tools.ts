@@ -126,7 +126,7 @@ export const sendMessage: McpToolDefinition = {
       content: JSON.stringify({ text }),
     });
 
-    log(`send_message: #${seq} → ${routing.resolvedName}`);
+    log('send_message completed');
     return ok(`Message sent to ${routing.resolvedName} (id: ${seq})`);
   },
 };
@@ -173,7 +173,7 @@ export const sendFile: McpToolDefinition = {
       content: JSON.stringify({ text: (args.text as string) || '', files: [filename] }),
     });
 
-    log(`send_file: ${id} → ${routing.resolvedName} (${filename})`);
+    log('send_file completed');
     return ok(`File sent to ${routing.resolvedName} (id: ${id}, filename: ${filename})`);
   },
 };
@@ -214,7 +214,7 @@ export const editMessage: McpToolDefinition = {
       content: JSON.stringify({ operation: 'edit', messageId: platformId, text }),
     });
 
-    log(`edit_message: #${seq} → ${platformId}`);
+    log('edit_message completed');
     return ok(`Message edit queued for #${seq}`);
   },
 };
@@ -255,7 +255,7 @@ export const addReaction: McpToolDefinition = {
       content: JSON.stringify({ operation: 'reaction', messageId: platformId, emoji }),
     });
 
-    log(`add_reaction: #${seq} → ${emoji} on ${platformId}`);
+    log('add_reaction completed');
     return ok(`Reaction queued for #${seq}`);
   },
 };

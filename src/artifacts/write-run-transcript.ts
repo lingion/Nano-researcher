@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { safeSerializeDebugPayload } from '../runtime/sanitize-debug.js';
+
 function buildAtomicTempPath(filePath: string): string {
   return path.join(
     path.dirname(filePath),
@@ -90,12 +92,39 @@ function writeFileAtomicSync(filePath: string, contents: string): void {
   }
 }
 
-async function writeRunTranscript(filePath: string, payload: unknown): Promise<void> {
-  await writeFileAtomic(filePath, JSON.stringify(payload, null, 2));
+interface WriteRunTranscriptOptions {
+  mode?: 'business' | 'debug';
 }
 
-writeRunTranscript.sync = (filePath: string, payload: unknown): void => {
-  writeFileAtomicSync(filePath, JSON.stringify(payload, null, 2));
+function serializeTranscriptPayload(payload: unknown, options?: WriteRunTranscriptOptions): string {
+  if (options?.mode === 'debug') {
+    return JSON.stringify(JSON.parse(safeSerializeDebugPayload(payload)), null, 2);
+  }
+  return JSON.stringify(payload, null, 2);
+}
+
+async function writeRunTranscript(
+  filePath: string,
+  payload: unknown,
+  options?: WriteRunTranscriptOptions,
+): Promise<void> {
+  await writeFileAtomic(filePath, serializeTranscriptPayload(payload, options));
+}
+
+writeRunTranscript.sync = (
+  filePath: string,
+  payload: unknown,
+  options?: WriteRunTranscriptOptions,
+): void => {
+  writeFileAtomicSync(filePath, serializeTranscriptPayload(payload, options));
 };
+
+export async function writeTextFileAtomic(filePath: string, contents: string): Promise<void> {
+  await writeFileAtomic(filePath, contents);
+}
+
+export function writeTextFileAtomicSync(filePath: string, contents: string): void {
+  writeFileAtomicSync(filePath, contents);
+}
 
 export { writeRunTranscript };

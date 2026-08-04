@@ -1,0 +1,31 @@
+{
+  "task": {"topic": "最新 AI 模型 Beta 和内测资格"},
+  "events": [
+    {
+      "type": "agent.decision",
+      "payload": {
+        "decision": {
+          "decision": "stop",
+          "reasoning": "Official product and access evidence confirms the current developer preview and its application path.",
+          "uncertainties": ["Availability may vary by region."],
+          "discardedLeads": ["A news repost without an application link."],
+          "finalPackage": {
+            "final_package": {
+              "product_name": "Example AI Developer Preview",
+              "product_type": "developer_preview",
+              "official_source_urls": ["https://example.ai/preview"],
+              "release_or_update_date": "2026-07-01",
+              "access_status": "DEVELOPER_PREVIEW",
+              "eligibility_requirements": ["Developer account", "Waitlist application"],
+              "access_or_application_url": "https://example.ai/apply",
+              "geography_or_account_limits": "Selected regions",
+              "deadline_or_waitlist_status": "Waitlist open",
+              "evidence_basis": ["Official preview page", "Official application page"],
+              "uncertainty_notes": ["Selection is not guaranteed"]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

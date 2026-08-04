@@ -8,22 +8,98 @@ export class RuntimeTimeoutError extends Error {
   }
 }
 
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('The operation was aborted', 'AbortError');
+}
+
 export function withTimeout<T>(
-  operation: Promise<T>,
+  operation: Promise<T> | ((signal: AbortSignal) => Promise<T>),
   timeoutMs: number,
   stage: string,
   onTimeout?: () => void,
+  externalSignal?: AbortSignal,
 ): Promise<T> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return operation;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return new Promise<T>((resolve, reject) => {
-    timer = setTimeout(() => {
-      onTimeout?.();
-      reject(new RuntimeTimeoutError(stage, timeoutMs));
-    }, timeoutMs);
-    operation.then(resolve, reject).finally(() => {
-      if (timer) clearTimeout(timer);
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort(externalSignal?.reason);
+
+  if (externalSignal?.aborted) {
+    controller.abort(externalSignal.reason);
+  } else {
+    externalSignal?.addEventListener('abort', forwardAbort, { once: true });
+  }
+
+  let operationPromise: Promise<T>;
+  try {
+    operationPromise = typeof operation === 'function'
+      ? operation(controller.signal)
+      : operation;
+  } catch (error) {
+    externalSignal?.removeEventListener('abort', forwardAbort);
+    return Promise.reject(error);
+  }
+
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return new Promise<T>((resolve, reject) => {
+      if (externalSignal?.aborted) {
+        reject(abortReason(externalSignal));
+        return;
+      }
+      const onAbort = () => reject(abortReason(externalSignal!));
+      externalSignal?.addEventListener('abort', onAbort, { once: true });
+      operationPromise.then(
+        (value) => {
+          externalSignal?.removeEventListener('abort', onAbort);
+          resolve(value);
+        },
+        (error) => {
+          externalSignal?.removeEventListener('abort', onAbort);
+          reject(error);
+        },
+      );
     });
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      externalSignal?.removeEventListener('abort', forwardAbort);
+      controller.abort();
+      reject(new RuntimeTimeoutError(stage, timeoutMs));
+      try {
+        onTimeout?.();
+      } catch {
+        // Timeout rejection remains authoritative when cleanup cannot start.
+      }
+    }, timeoutMs);
+
+    const onExternalAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(abortReason(controller.signal));
+    };
+    controller.signal.addEventListener('abort', onExternalAbort, { once: true });
+
+    operationPromise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        controller.signal.removeEventListener('abort', onExternalAbort);
+        externalSignal?.removeEventListener('abort', forwardAbort);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        controller.signal.removeEventListener('abort', onExternalAbort);
+        externalSignal?.removeEventListener('abort', forwardAbort);
+        reject(error);
+      },
+    );
   });
 }
 
