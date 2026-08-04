@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AutoSearchProvider } from './auto.ts';
 import type { AutoEngine } from './contracts.ts';
+import { SearchResponseEngine } from './engine-runner.ts';
+import { normalizeResponse } from './providers/engines.ts';
+import { attemptDiagnostic } from './providers/result.js';
 
 function engine(name: string, fn: AutoEngine['run']): AutoEngine {
   return { name, capabilities: ['general-web'], run: fn };
@@ -39,18 +42,209 @@ test('Auto propagates cancellation to the active engine and returns bounded diag
   controller.abort(new Error('cancel test'));
   const result = await pending;
   assert.equal(observedAbort, true);
-  assert.equal(result.outcome, 'timeout');
+  assert.equal(result.outcome, 'cancelled');
 });
 
-test('Auto expands to the second engine batch only when the primary batch is insufficient', async () => {
+test('Auto runs one bounded provider batch without result-count early stopping', async () => {
   const calls: string[] = [];
   const make = (name: string, count: number): AutoEngine => engine(name, async (query) => {
     calls.push(name);
     return { engine: name, outcome: count ? 'success_with_content' : 'success_empty', results: Array.from({ length: count }, (_, index) => ({ query, title: `${name}-${index}`, url: `https://${name}.example/${index}`, snippet: name, provider: name, rank: index + 1 })), durationMs: 1, requestCount: 1, retryCount: 0 };
   });
-  const auto = new AutoSearchProvider({ engines: [make('primary-a', 1), make('primary-b', 0), make('fallback', 5)], primaryEngineCount: 2, maxEngineCalls: 3, minResultsBeforeExpansion: 5, deadlineMs: 1000, limit: 10 });
+  const auto = new AutoSearchProvider({ engines: [make('primary-a', 1), make('primary-b', 0), make('fallback', 5)], maxEngineCalls: 3, deadlineMs: 1000, limit: 10 });
   const result = await auto.search('query');
   assert.deepEqual(calls, ['primary-a', 'primary-b', 'fallback']);
   assert.deepEqual(result.diagnostics?.map((item) => item.provider), ['primary-a', 'primary-b', 'fallback']);
-  assert.deepEqual(result.autoDiagnostics?.batches, [['primary-a', 'primary-b'], ['fallback']]);
+  assert.deepEqual(result.autoDiagnostics?.batches, [['primary-a', 'primary-b', 'fallback']]);
+  assert.equal(result.autoDiagnostics?.stoppedReason, 'all_engines');
+});
+
+test('Auto makes zero provider calls for a pre-aborted request', async () => {
+  let calls = 0;
+  const controller = new AbortController();
+  controller.abort(new Error('already cancelled'));
+  const auto = new AutoSearchProvider({
+    engines: [engine('never', async () => {
+      calls += 1;
+      throw new Error('must not run');
+    })],
+  });
+  const result = await auto.search('query', { signal: controller.signal });
+  assert.equal(calls, 0);
+  assert.equal(result.outcome, 'cancelled');
+  assert.equal(result.autoDiagnostics?.stoppedReason, 'cancelled');
+});
+
+test('Auto honors an explicit zero engine budget without invoking a provider', async () => {
+  let calls = 0;
+  const auto = new AutoSearchProvider({
+    engines: [engine('never', async () => {
+      calls += 1;
+      throw new Error('must not run');
+    })],
+    maxEngineCalls: 0,
+  });
+  const result = await auto.search('query');
+  assert.equal(calls, 0);
+  assert.equal(result.outcome, 'success_empty');
+  assert.equal(result.autoDiagnostics?.stoppedReason, 'engine_budget');
+});
+
+test('Auto returns at its deadline when an engine ignores AbortSignal', async () => {
+  const started = Date.now();
+  const auto = new AutoSearchProvider({
+    engines: [engine('ignores-abort', async () => await new Promise(() => undefined))],
+    deadlineMs: 25,
+  });
+  const result = await auto.search('query');
+  assert.ok(Date.now() - started < 250);
+  assert.equal(result.outcome, 'timeout');
+  assert.equal(result.diagnostics?.[0]?.error?.code, 'AUTO_TIMEOUT');
+});
+
+test('Auto returns promptly when a cancelled engine ignores AbortSignal', async () => {
+  const controller = new AbortController();
+  const auto = new AutoSearchProvider({
+    engines: [engine('ignores-cancel', async () => await new Promise(() => undefined))],
+    deadlineMs: 1_000,
+  });
+  const pending = auto.search('query', { signal: controller.signal });
+  controller.abort(new Error('cancelled by test'));
+  const result = await pending;
+  assert.equal(result.outcome, 'cancelled');
+});
+
+test('Auto preserves sibling successes when one engine throws', async () => {
+  const auto = new AutoSearchProvider({
+    engines: [
+      engine('broken', async () => { throw new Error('provider exploded'); }),
+      engine('healthy', async (query) => ({ engine: 'healthy', outcome: 'success_with_content', results: [{ query, title: 'Healthy', url: 'https://healthy.example', snippet: 'ok', provider: 'healthy' }], durationMs: 1, requestCount: 1, retryCount: 0 })),
+    ],
+    maxEngineCalls: 2,
+  });
+  const result = await auto.search('query');
+  assert.equal(result.results.length, 1);
+  assert.equal(result.diagnostics?.find((item) => item.provider === 'broken')?.error?.code, 'ENGINE_FAILED');
+  assert.equal(result.diagnostics?.find((item) => item.provider === 'healthy')?.outcome, 'success_with_content');
+});
+
+test('Auto preserves provider failure semantics when no engine returns results', async () => {
+  const auto = new AutoSearchProvider({
+    engines: [
+      engine('blocked', async () => ({ engine: 'blocked', outcome: 'http_error', results: [], durationMs: 1, requestCount: 1, retryCount: 0, error: { code: 'PROVIDER_BLOCKED', message: 'captcha' } })),
+      engine('parser', async () => ({ engine: 'parser', outcome: 'transport_error', results: [], durationMs: 1, requestCount: 1, retryCount: 0, error: { code: 'PARSER_FAILURE', message: 'invalid markup' } })),
+    ],
+    maxEngineCalls: 2,
+  });
+  const result = await auto.search('query');
+  assert.equal(result.outcome, 'http_error');
+  assert.deepEqual(result.error, { code: 'PROVIDER_BLOCKED', message: 'captcha' });
+});
+
+test('provider normalization keeps valid empty results distinct from blocked and failed responses', () => {
+  const empty = normalizeResponse({
+    records: [],
+    durationMs: 47,
+    retryCount: 1,
+    diagnostics: { status: 200, markupFound: true, requestCount: 2 },
+  }, 'query', 'example');
+  assert.equal(empty.outcome, 'success_empty');
+  assert.equal(empty.durationMs, 47);
+  assert.equal(empty.retryCount, 1);
+  assert.equal(empty.diagnostics?.[0]?.requestCount, 2);
+  assert.equal(empty.error, undefined);
+
+  const blocked = normalizeResponse({
+    records: [],
+    diagnostics: { status: 200, blocked: true, blockReason: 'captcha_or_verification', requestCount: 1 },
+  }, 'query', 'example');
+  assert.equal(blocked.outcome, 'http_error');
+  assert.equal(blocked.error?.code, 'PROVIDER_BLOCKED');
+  assert.equal(blocked.diagnostics?.[0]?.details?.blocked, true);
+
+  const failed = normalizeResponse({
+    records: [],
+    diagnostics: { error: { code: 'http_status', message: 'HTTP 403' }, status: 403, requestCount: 1 },
+  }, 'query', 'example');
+  assert.equal(failed.outcome, 'http_error');
+  assert.equal(failed.error?.code, 'http_status');
+
+  const parseFailed = normalizeResponse({
+    records: [],
+    diagnostics: { parseFailures: 1, markupFound: true, requestCount: 1 },
+  }, 'query', 'example');
+  assert.equal(parseFailed.outcome, 'transport_error');
+  assert.equal(parseFailed.error?.code, 'PARSER_FAILURE');
+
+  const invalidRecord = normalizeResponse({ records: [{ title: 'Broken', url: '', snippet: '' }], diagnostics: { status: 200 } }, 'query', 'example');
+  assert.equal(invalidRecord.outcome, 'transport_error');
+  assert.equal(invalidRecord.error?.code, 'PARSER_FAILURE');
+  assert.equal(invalidRecord.diagnostics?.[0]?.resultCount, 0);
+});
+
+test('attempt diagnostics preserve HTTP failure semantics', () => {
+  const attempt = attemptDiagnostic({ url: 'https://example.com/search', error: { code: 'http_status', status: 403, message: 'HTTP 403' } });
+  assert.equal(attempt.outcome, 'http_error');
+});
+
+test('provider normalization exposes ranker fields at the result boundary', () => {
+  const response = normalizeResponse({
+    records: [{ title: 'Video', url: 'https://example.com/video', snippet: 'x', sourceFamily: 'cn-video', resultType: 'video', score: 0.7 }],
+    diagnostics: { status: 200 },
+  }, 'query', 'example');
+  assert.equal(response.results[0]?.sourceFamily, 'cn-video');
+  assert.equal(response.results[0]?.resultType, 'video');
+  assert.equal(response.results[0]?.metadata?.score, 0.7);
+  assert.equal(response.results[0]?.metadata?.sourceFamily, undefined);
+});
+
+test('provider normalization aggregates retries and requests from nested attempts', () => {
+  const response = normalizeResponse({
+    records: [],
+    diagnostics: {
+      status: 503,
+      requestCount: 2,
+      retryCount: 1,
+      attempts: [
+        { url: 'https://one.example', retryCount: 1 },
+        { url: 'https://two.example', retryCount: 0 },
+      ],
+    },
+  }, 'query', 'example');
+  assert.equal(response.retryCount, 1);
+  assert.equal(response.diagnostics?.[0]?.requestCount, 3);
+});
+
+test('SearchResponseEngine aggregates request and attempt diagnostics', async () => {
+  const engine = new SearchResponseEngine('example', ['general-web'], async () => ({
+    outcome: 'success_empty',
+    results: [],
+    provider: 'example',
+    durationMs: 5,
+    retryCount: 2,
+    diagnostics: [
+      { provider: 'example', outcome: 'success_empty', durationMs: 2, resultCount: 0, requestCount: 1, details: { url: 'https://one.example' } },
+      { provider: 'example', outcome: 'http_error', durationMs: 3, resultCount: 0, requestCount: 2, details: { url: 'https://two.example' }, error: { code: 'http_status', message: 'HTTP 403' } },
+    ],
+  }));
+  const result = await engine.run('query', { signal: new AbortController().signal, deadlineMs: 1000, request: { query: 'query', limit: 10, deadlineMs: 1000 } });
+  assert.equal(result.requestCount, 3);
+  assert.equal(result.retryCount, 2);
+  assert.equal(result.details?.attemptCount, 2);
+  assert.deepEqual(result.details?.attempts, [
+    { url: 'https://one.example' },
+    { url: 'https://two.example' },
+  ]);
+});
+
+test('SearchResponseEngine counts nested attempts instead of top-level provider diagnostics', async () => {
+  const engine = new SearchResponseEngine('nested', ['general-web'], async () => ({
+    outcome: 'success_empty', results: [], provider: 'nested', durationMs: 5, retryCount: 1,
+    diagnostics: [{ provider: 'nested', outcome: 'success_empty', durationMs: 5, resultCount: 0, requestCount: 3, details: {
+      attempts: [{ url: 'https://one.example', retryCount: 1 }, { url: 'https://two.example', retryCount: 0 }],
+    } }],
+  }));
+  const result = await engine.run('query', { signal: new AbortController().signal, deadlineMs: 1000, request: { query: 'query', limit: 10, deadlineMs: 1000 } });
+  assert.equal(result.details?.attemptCount, 2);
+  assert.equal(result.requestCount, 3);
 });

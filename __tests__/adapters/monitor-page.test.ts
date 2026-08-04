@@ -142,7 +142,8 @@ test('monitor consumes a fragment token into sessionStorage and authenticates ev
   await flushBrowserTasks();
 
   assert.equal(dom.window.location.hash, '');
-  assert.equal(dom.window.location.search, '?runId=run_test');
+  assert.equal(dom.window.location.pathname, '/monitor/run_test');
+  assert.equal(dom.window.location.search, '');
   assert.equal(dom.window.sessionStorage.getItem('researchHttpAuthToken'), token);
   assert.equal(dom.window.localStorage.length, 0);
   assert.equal(calls.length, 2);
@@ -214,7 +215,7 @@ test('run list polling is non-overlapping and renders list questions as text', a
   await flushBrowserTasks();
 
   assert.equal([...timers.values()].filter((timer) => timer.delay === 2_000).length, 1);
-  assert.match(dom.window.document.querySelector('#eventList button')?.textContent ?? '', /<svg id="list-xss"/);
+  assert.match(dom.window.document.querySelector('#runList a')?.textContent ?? '', /<svg id="list-xss"/);
   assert.equal(dom.window.document.querySelectorAll('svg').length, 0);
   assert.equal((dom.window as any).__listXss, undefined);
   dom.window.close();
@@ -246,6 +247,47 @@ test('monitor requests events after the last sequence and deduplicates a legacy 
     [...dom.window.document.querySelectorAll('#eventList .event pre')].map((node) => JSON.parse(node.textContent ?? '{}').sequence),
     [1, 2, 3],
   );
+  dom.window.close();
+});
+
+test('monitor uses top-level projection counts and fetches the full answer only when available', async () => {
+  const requestedUrls: string[] = [];
+  const responses = [
+    jsonResponse({
+      runId: 'run_test', question: 'top-level question', status: 'completed', reportStatus: 'completed', answerAvailable: true,
+      counts: { searchResults: 8, fetchedPages: 3, events: 4, protocolErrors: 0, iterations: 2 },
+      report: { jsonPath: 'artifacts/run/report.json', markdownPath: 'artifacts/run/report.md', htmlPath: 'artifacts/run/report.html' },
+    }),
+    jsonResponse({ events: [] }),
+    jsonResponse({ result: { state: { finalAnswer: 'answer from full projection' } } }),
+  ];
+  const { dom } = openMonitor(async (url) => {
+    requestedUrls.push(url);
+    return responses.shift()!;
+  });
+  await flushBrowserTasks();
+  assert.deepEqual(requestedUrls, [
+    '/v1/research/run_test',
+    '/v1/research/run_test/events?afterSequence=0',
+    '/v1/research/run_test?include=full',
+  ]);
+  assert.equal(dom.window.document.querySelector('#question')?.textContent, 'top-level question');
+  assert.equal(dom.window.document.querySelector('#searches')?.textContent, '8');
+  assert.equal(dom.window.document.querySelector('#fetches')?.textContent, '3');
+  assert.equal(dom.window.document.querySelector('#answer')?.textContent, 'answer from full projection');
+  assert.equal(dom.window.document.querySelectorAll('#links a').length, 3);
+  dom.window.close();
+});
+
+test('monitor stops polling after an unrecoverable detail request error and exposes retry', async () => {
+  const { dom, timers } = openMonitor(async (url) => {
+    if (url.includes('/events')) return jsonResponse({ error: 'events unavailable' }, false);
+    return jsonResponse(runSnapshot());
+  });
+  await flushBrowserTasks();
+  assert.equal([...timers.values()].filter((timer) => timer.delay === 1_500).length, 0);
+  assert.equal((dom.window.document.querySelector('#retry') as HTMLButtonElement)?.hidden, false);
+  assert.match(dom.window.document.querySelector('#eventStatus')?.textContent ?? '', /事件加载失败/);
   dom.window.close();
 });
 

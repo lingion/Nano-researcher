@@ -16,7 +16,7 @@ export interface EngineContext {
 
 export interface EngineResult {
   engine: string;
-  outcome: Exclude<ToolOutcome, 'protocol_error' | 'cancelled'>;
+  outcome: Exclude<ToolOutcome, 'protocol_error'>;
   results: SearchResult[];
   durationMs: number;
   requestCount: number;
@@ -39,6 +39,8 @@ export interface AutoDiagnostics {
   durationMs: number;
   uniqueResultCount?: number;
   duplicateResultCount?: number;
+  filteredResultCount?: number;
+  outputLimitedCount?: number;
   successfulEngineCount?: number;
   blockedEngineCount?: number;
 }

@@ -13,8 +13,14 @@ export interface BrowserRenderResult {
   html?: string;
 }
 
+export interface BrowserHtmlExtractionResult {
+  title?: string;
+  content: string;
+  warnings?: string[];
+}
+
 export interface BrowserAdapter {
-  render(url: string, options: { timeoutMs: number; maxChars: number; signal?: AbortSignal }): Promise<BrowserRenderResult>;
+  render(url: string, options: { timeoutMs: number; maxChars: number; maxHtmlChars?: number; signal?: AbortSignal }): Promise<BrowserRenderResult>;
   close(): Promise<void>;
 }
 
@@ -22,7 +28,10 @@ interface PlaywrightPage {
   route(pattern: string, handler: (route: any) => Promise<unknown>): Promise<unknown>;
   goto(url: string, options: { waitUntil: string; timeout: number }): Promise<unknown>;
   url(): string;
-  locator(selector: string): { innerText(): Promise<string> };
+  locator(selector: string): {
+    innerText(): Promise<string>;
+    evaluate?<T>(pageFunction: (element: Element, arg: number) => T, arg: number): Promise<T>;
+  };
   title(): Promise<string>;
 }
 
@@ -141,7 +150,7 @@ class SharedBrowserManager {
     this.permits = new ContextPermitPool(maxConcurrentContexts, maxQueuedContexts);
   }
 
-  async render(url: string, options: { timeoutMs: number; maxChars: number; signal?: AbortSignal }): Promise<BrowserRenderResult> {
+  async render(url: string, options: { timeoutMs: number; maxChars: number; maxHtmlChars?: number; signal?: AbortSignal }): Promise<BrowserRenderResult> {
     if (this.closePromise) {
       throw browserError('BROWSER_CONTEXT_POOL_CLOSED', 'Browser context pool is closing.');
     }
@@ -175,7 +184,11 @@ class SharedBrowserManager {
       assertSafeNetworkTarget(finalUrl);
       const text = (await page.locator('body').innerText()).slice(0, options.maxChars);
       if (options.signal?.aborted) throw signalReason(options.signal);
-      return { finalUrl, title: await page.title(), text };
+      const htmlLocator = page.locator('html');
+      const html = htmlLocator.evaluate
+        ? await htmlLocator.evaluate((element, maxChars) => element.outerHTML.slice(0, maxChars), options.maxHtmlChars ?? Math.min(1_000_000, options.maxChars * 8))
+        : undefined;
+      return { finalUrl, title: await page.title(), text, ...(html ? { html } : {}) };
     } finally {
       if (abortContext) options.signal?.removeEventListener('abort', abortContext);
       if (context) {
@@ -235,13 +248,24 @@ class SharedBrowserManager {
 }
 
 export interface BrowserFetchOptions {
-  staticFetch(url: string, signal?: AbortSignal): Promise<{ title?: string; content?: string; finalUrl?: string }>;
+  staticFetch(url: string, signal?: AbortSignal): Promise<{
+    title?: string;
+    content?: string;
+    finalUrl?: string;
+    statusCode?: number;
+    contentType?: string;
+    contentLength?: number;
+    truncated?: boolean;
+    extractionWarnings?: string[];
+  }>;
   browser?: BrowserAdapter;
   now: string;
   dateWindow?: { start: string; end: string };
   maxChars?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
+  derivePageFacts?: boolean;
+  extractHtml?: (html: string, url: string, options: { signal?: AbortSignal; timeoutMs?: number }) => Promise<BrowserHtmlExtractionResult>;
 }
 
 const DEFAULT_MAX_CHARS = 20_000;
@@ -360,6 +384,7 @@ export async function fetchWithBrowserFallback(url: string, options: BrowserFetc
     throw options.signal.reason ?? new DOMException('The operation was aborted', 'AbortError');
   }
   const staticResult = await options.staticFetch(url, options.signal);
+  const derivePageFacts = options.derivePageFacts ?? true;
   const staticContent = (staticResult.content ?? '').slice(0, maxChars);
   const base: FetchedPageRecord = {
     requestedUrl: url,
@@ -367,12 +392,18 @@ export async function fetchWithBrowserFallback(url: string, options: BrowserFetc
     title: staticResult.title ?? '',
     content: staticContent,
     backend: 'static-fetch',
+    contentLength: staticResult.contentLength ?? new TextEncoder().encode(staticResult.content ?? '').byteLength,
+    truncated: staticResult.truncated ?? (staticResult.content ?? '').length > maxChars,
+    ...(staticResult.statusCode !== undefined ? { statusCode: staticResult.statusCode } : {}),
+    ...(staticResult.contentType ? { contentType: staticResult.contentType } : {}),
     pageRenderMode: 'static',
     lastVerifiedAt: options.now,
-    freshnessStatus: freshness(extractDate(staticContent), options.now, options.dateWindow),
-    accessSignals: extractSignals(`${staticResult.title ?? ''}\n${staticContent}`),
-    dateEvidence: extractDate(staticContent) ? [extractDate(staticContent)!] : [],
-    extractionWarnings: [],
+    ...(derivePageFacts ? {
+      freshnessStatus: freshness(extractDate(staticContent), options.now, options.dateWindow),
+      accessSignals: extractSignals(`${staticResult.title ?? ''}\n${staticContent}`),
+      dateEvidence: extractDate(staticContent) ? [extractDate(staticContent)!] : [],
+    } : {}),
+    extractionWarnings: staticResult.extractionWarnings ?? [],
   };
 
   if (!staticNeedsBrowser(staticContent)) return base;
@@ -384,26 +415,53 @@ export async function fetchWithBrowserFallback(url: string, options: BrowserFetc
     const rendered = await browser.render(url, {
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       maxChars,
+      maxHtmlChars: Math.min(1_000_000, Math.max(maxChars, maxChars * 8)),
       signal: options.signal,
     });
     const finalUrl = rendered.finalUrl ?? base.finalUrl;
     assertSafeNetworkTarget(finalUrl);
-    const text = rendered.text.slice(0, maxChars);
-    const combined = `${rendered.title ?? ''}\n${text}`;
-    const publishedAt = extractDate(combined);
-    const signals = extractSignals(combined);
+    let text = rendered.text.slice(0, maxChars);
+    let title = rendered.title ?? base.title;
+    const htmlWarnings: string[] = [];
+    if (rendered.html && options.extractHtml) {
+      try {
+        const extracted = await options.extractHtml(rendered.html, finalUrl, {
+          signal: options.signal,
+          timeoutMs: options.timeoutMs,
+        });
+        if (extracted.content.trim()) {
+          text = extracted.content.slice(0, maxChars);
+          title = extracted.title?.trim() || title;
+        } else {
+          htmlWarnings.push('browser_html_extraction_empty: falling back to rendered body text');
+        }
+        htmlWarnings.push(...(extracted.warnings ?? []));
+      } catch (error) {
+        if (isAbortError(error, options.signal)) throw error;
+        htmlWarnings.push(`browser_html_extraction_failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const combined = `${title}\n${text}`;
+    const publishedAt = derivePageFacts ? extractDate(combined) : undefined;
+    const signals = derivePageFacts ? extractSignals(combined) : undefined;
+    const browserWarnings = staticNeedsBrowser(text)
+      ? ['browser_extraction_weak: rendered body text is short or appears to be a loading shell']
+      : [];
     return {
       ...base,
       finalUrl,
-      title: rendered.title ?? base.title,
+      title,
       content: text,
       backend: 'playwright',
+      truncated: base.truncated || rendered.text.length > maxChars,
       pageRenderMode: 'playwright' as PageRenderMode,
-      publishedAt,
-      accessSignals: signals,
-      freshnessStatus: freshness(publishedAt, options.now, options.dateWindow),
-      dateEvidence: publishedAt ? [publishedAt] : [],
-      extractionWarnings: [],
+      ...(derivePageFacts ? {
+        publishedAt,
+        accessSignals: signals,
+        freshnessStatus: freshness(publishedAt, options.now, options.dateWindow),
+        dateEvidence: publishedAt ? [publishedAt] : [],
+      } : {}),
+      extractionWarnings: [...(base.extractionWarnings ?? []), ...htmlWarnings, ...browserWarnings],
     };
   } catch (error) {
     if (options.signal?.aborted) {
@@ -414,7 +472,11 @@ export async function fetchWithBrowserFallback(url: string, options: BrowserFetc
     }
     return {
       ...base,
-      extractionWarnings: [`${error instanceof Error ? error.message : String(error)}`],
+      extractionWarnings: [...(base.extractionWarnings ?? []), `${error instanceof Error ? error.message : String(error)}`],
     };
   }
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  return Boolean(signal?.aborted) || error instanceof DOMException && error.name === 'AbortError';
 }

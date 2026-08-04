@@ -36,7 +36,7 @@ export interface GenericReport {
   answer?: unknown;
   sources: Array<{ title: string; url: string; provider: string; snippet: string }>;
   discoveredCandidates: Array<{ title: string; url: string; provider: string; snippet: string }>;
-  fetchedPages: Array<{ title: string; requestedUrl: string; finalUrl: string; provider: string; outcome: string; extractionWarnings: string[] }>;
+  fetchedPages: Array<{ title: string; requestedUrl: string; finalUrl: string; provider: string; outcome: string; contentType?: string; contentLength?: number; truncated?: boolean; renderMode?: string; durationMs: number; retryCount: number; extractionWarnings: string[] }>;
   events: RunEvent[];
 }
 
@@ -100,17 +100,30 @@ export function buildGenericReport(runId: string, status: string, result: AgentR
     fetchOutcomes: countEventOutcomes(fetchEvents),
     autoDiagnostics: events.filter((event) => event.type === 'search.result' && event.payload.autoDiagnostics).map((event) => event.payload.autoDiagnostics as Record<string, unknown>),
     uncertainties: result.state.uncertainties,
-    answer: result.state.finalAnswer,
+    ...(typeof result.state.finalAnswer === 'string' && result.state.finalAnswer.trim() ? { answer: result.state.finalAnswer } : {}),
     sources,
     discoveredCandidates: result.state.searchResults.map(({ title, url, provider, snippet }) => ({ title, url, provider, snippet })),
-    fetchedPages: result.state.fetchedPages.map((page) => ({ title: page.title, requestedUrl: page.requestedUrl, finalUrl: page.finalUrl, provider: page.provider, outcome: page.outcome, extractionWarnings: page.extractionWarnings })),
+    fetchedPages: result.state.fetchedPages.map((page) => ({
+      title: page.title,
+      requestedUrl: page.requestedUrl,
+      finalUrl: page.finalUrl,
+      provider: page.provider,
+      outcome: page.outcome,
+      ...(page.contentType ? { contentType: page.contentType } : {}),
+      ...(page.contentLength !== undefined ? { contentLength: page.contentLength } : {}),
+      ...(page.truncated !== undefined ? { truncated: page.truncated } : {}),
+      ...(page.renderMode ? { renderMode: page.renderMode } : {}),
+      durationMs: page.durationMs,
+      retryCount: page.retryCount,
+      extractionWarnings: page.extractionWarnings,
+    })),
     events,
   };
 }
 
 export function renderGenericReportMarkdown(report: GenericReport): string {
   const lines = [
-    '# Research Report', '', `- Status: ${report.status}`, `- Run ID: ${report.runId}`, `- Question: ${report.question}`,
+    '# Nano-researcher Report', '', `- Status: ${report.status}`, `- Run ID: ${report.runId}`, `- Question: ${report.question}`,
     `- Iterations: ${report.iterations}`, `- Search results: ${report.searchResultCount}`, `- Unique discovered sources: ${report.uniqueSourceCount}`, `- Fetch attempts: ${report.fetchAttemptCount}`, `- Successful fetches: ${report.successfulFetchCount}`, `- Validated evidence: ${report.validatedEvidenceCount}`, `- Findings: ${report.findingCount} total (${report.confirmedFindingCount} confirmed, ${report.uncertainFindingCount} uncertain, ${report.excludedFindingCount} excluded)`, `- Answer status: ${report.answerStatus}`, `- Protocol errors: ${report.protocolErrorCount}`, `- Model errors: ${report.modelErrorCount}`, `- Interruption: ${report.interruption?.reason ?? 'none'}`, '',
     '## Answer', '', typeof report.answer === 'string' ? report.answer : `No final answer. ${report.answerReason ?? 'The run did not produce a finish decision.'}`, '',
     '## Final Evidence Sources', ''
@@ -131,7 +144,7 @@ export async function writeGenericReport(outputDir: string, report: GenericRepor
   const findingHtml = report.findings.map((finding) => `<li><strong>${escape(finding.disposition)}</strong> ${escape(finding.claim)}<br><small>${escape(finding.evidenceUrls.join(', ') || 'no evidence')}</small></li>`).join('');
   const discoveredHtml = report.discoveredCandidates.map((source) => `<li><a href="${escape(source.url)}">${escape(source.title || source.url)}</a> <small>${escape(source.provider)}</small></li>`).join('');
   const renderedAnswer = typeof report.answer === 'string' ? report.answer : `No final answer. ${report.answerReason ?? 'The run did not produce a finish decision.'}`;
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Research Report</title></head><body><main><h1>Research Report</h1><p>${escape(report.question)}</p><p>Status: ${escape(report.status)}; discovered sources: ${report.uniqueSourceCount}; fetched pages: ${report.fetchedPageCount}; validated evidence: ${report.validatedEvidenceCount}; findings: ${report.findingCount} total (${report.confirmedFindingCount} confirmed, ${report.uncertainFindingCount} uncertain, ${report.excludedFindingCount} excluded)</p><h2>Answer</h2><pre>${escape(renderedAnswer)}</pre><h2>Final Evidence Sources</h2><ol>${sourceHtml}</ol><h2>Findings</h2><ol>${findingHtml}</ol><h2>Discovered Candidates</h2><ol>${discoveredHtml}</ol></main></body></html>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Nano-researcher Report</title></head><body><main><h1>Nano-researcher Report</h1><p>${escape(report.question)}</p><p>Status: ${escape(report.status)}; discovered sources: ${report.uniqueSourceCount}; fetched pages: ${report.fetchedPageCount}; validated evidence: ${report.validatedEvidenceCount}; findings: ${report.findingCount} total (${report.confirmedFindingCount} confirmed, ${report.uncertainFindingCount} uncertain, ${report.excludedFindingCount} excluded)</p><h2>Answer</h2><pre>${escape(renderedAnswer)}</pre><h2>Final Evidence Sources</h2><ol>${sourceHtml}</ol><h2>Findings</h2><ol>${findingHtml}</ol><h2>Discovered Candidates</h2><ol>${discoveredHtml}</ol></main></body></html>`;
   const bundleDir = path.join(outputDir, 'report');
   const stagingDir = path.join(outputDir, `.report-${randomUUID()}.tmp`);
   const jsonPath = path.join(bundleDir, 'report.json');

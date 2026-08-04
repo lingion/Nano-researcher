@@ -167,7 +167,7 @@ export async function createSearchMcpTools(options: SearchMcpToolOptions = {}): 
     ...(options.providerConfigPath ? { SEARCH_MCP_PROVIDER_CONFIG_PATH: options.providerConfigPath } : {}),
   });
 
-  const client = options.createClient?.() ?? new Client({ name: 'local-policy-agent', version: '0.1.0' });
+  const client = options.createClient?.() ?? new Client({ name: 'nano-researcher', version: '0.1.0' });
   const transport = options.createTransport?.({
     command,
     args,

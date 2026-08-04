@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { runAgent } from '../../app/run-agent.ts';
 import type { ResearchAgentDependencies } from '../../agent/agent-loop.ts';
@@ -40,6 +40,12 @@ function json(response: ServerResponse, status: number, value: unknown): void {
   response.end(data);
 }
 
+function reportLinks(run: ResearchRun): Record<string, string> | undefined {
+  if (!run.report) return undefined;
+  const base = `/v1/research/${encodeURIComponent(run.runId)}/report`;
+  return { jsonPath: `${base}/json`, markdownPath: `${base}/markdown`, htmlPath: `${base}/html` };
+}
+
 function runProjection(run: ResearchRun): Record<string, unknown> {
   const result = run.result;
   return {
@@ -53,7 +59,7 @@ function runProjection(run: ResearchRun): Record<string, unknown> {
     cancellationRequestedAt: run.cancellationRequestedAt,
     ...('settledAt' in run ? { settledAt: run.settledAt } : {}),
     error: run.error,
-    report: run.report,
+    report: reportLinks(run),
     reportStatus: run.reportStatus,
     reportError: run.reportError,
     counts: {
@@ -80,6 +86,27 @@ function nonNegativeInteger(value: string | null, fallback: number): number {
 export interface ResearchHttpServerOptions {
   exposeAtomicTools?: boolean;
   authToken?: string;
+  reportRoot?: string;
+}
+
+const REPORT_FILES = { json: 'report.json', markdown: 'report.md', html: 'report.html' } as const;
+
+function isWithin(root: string, candidate: string): boolean {
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+}
+
+async function resolveReportPath(reportRoot: string | undefined, runId: string, format: string): Promise<string | undefined> {
+  const fileName = REPORT_FILES[format as keyof typeof REPORT_FILES];
+  if (!reportRoot || !fileName || !/^run_[A-Za-z0-9_-]+$/.test(runId)) return undefined;
+  try {
+    const root = await realpath(path.resolve(reportRoot));
+    const candidate = path.resolve(root, runId, 'report', fileName);
+    if (!isWithin(root, candidate)) return undefined;
+    const resolved = await realpath(candidate);
+    return isWithin(root, resolved) ? resolved : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function authorized(request: IncomingMessage, expectedToken: string | undefined): boolean {
@@ -95,10 +122,10 @@ export function createResearchHttpServer(dependencies: ResearchAgentDependencies
   const exposeAtomicTools = options.exposeAtomicTools === true;
   const server = createServer(async (request, response) => {
     try {
-      const parsedUrl = new URL(request.url ?? '/', 'http://local-policy-agent.invalid');
+      const parsedUrl = new URL(request.url ?? '/', 'http://nano-researcher.invalid');
       const pathname = parsedUrl.pathname;
       if (request.method === 'GET' && pathname === '/v1/health') return json(response, 200, { ok: true });
-      if (request.method === 'GET' && pathname === '/monitor') {
+      if (request.method === 'GET' && (pathname === '/monitor' || /^\/monitor\/[^/]+\/?$/.test(pathname))) {
         response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" }); response.end(monitorPage); return;
       }
       if (!authorized(request, options.authToken)) {
@@ -121,6 +148,19 @@ export function createResearchHttpServer(dependencies: ResearchAgentDependencies
       }
       if (request.method === 'GET' && runManager && pathname.startsWith('/v1/research/')) {
         const parts = pathname.split('/').filter(Boolean); const runId = parts[2];
+        if (parts.length === 5 && parts[3] === 'report') {
+          const run = runManager.get(runId);
+          if (!run) return json(response, 404, { error: 'run_not_found' });
+          const format = parts[4];
+          const reportPath = await resolveReportPath(options.reportRoot, run.runId, format);
+          if (!reportPath) return json(response, 404, { error: 'report_not_found' });
+          try {
+            const data = await readFile(reportPath);
+            const contentType = format === 'html' ? 'text/html; charset=utf-8' : format === 'json' ? 'application/json; charset=utf-8' : 'text/markdown; charset=utf-8';
+            response.writeHead(200, { 'content-type': contentType, 'content-length': data.byteLength }); response.end(data);
+          } catch { json(response, 404, { error: 'report_not_found' }); }
+          return;
+        }
         if (parts.length === 4 && parts[3] === 'events') {
           const events = runManager.events(runId);
           if (!events) return json(response, 404, { error: 'run_not_found' });

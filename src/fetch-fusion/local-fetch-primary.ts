@@ -18,12 +18,14 @@ export interface HtmlExtractionResult {
   title: string;
   content: string;
   officialUrls: string[];
+  warnings?: string[];
 }
 
 interface HtmlExtractionRequest {
   id: number;
   html: string;
   url: string;
+  generic?: boolean;
 }
 
 interface HtmlExtractionResponse {
@@ -44,7 +46,7 @@ export interface HtmlExtractionPool {
   extract(
     html: string,
     url: string,
-    options?: { signal?: AbortSignal; timeoutMs?: number },
+    options?: { signal?: AbortSignal; timeoutMs?: number; generic?: boolean },
   ): Promise<HtmlExtractionResult>;
   close(): Promise<void>;
 }
@@ -60,6 +62,7 @@ interface ExtractionJob {
   timer?: NodeJS.Timeout;
   state: 'queued' | 'active' | 'settled';
   slot?: WorkerSlot;
+  generic?: boolean;
 }
 
 interface WorkerSlot {
@@ -187,7 +190,7 @@ export function createHtmlExtractionPool(options: {
       job.slot = slot;
       slot.worker.ref?.();
       try {
-        slot.worker.postMessage({ id: job.id, html: job.html, url: job.url });
+        slot.worker.postMessage({ id: job.id, html: job.html, url: job.url, generic: job.generic });
       } catch (error) {
         slot.active = undefined;
         settle(job, { error });
@@ -224,6 +227,7 @@ export function createHtmlExtractionPool(options: {
           resolve,
           reject,
           signal: extractOptions.signal,
+          generic: extractOptions.generic,
           state: 'queued',
         };
         const timeoutMs = positiveInteger(String(extractOptions.timeoutMs ?? ''), defaultTimeoutMs);
@@ -296,26 +300,29 @@ function isCancellation(error: unknown, signal?: AbortSignal): boolean {
     || (error instanceof Error && (error.name === 'AbortError' || error.name === 'RuntimeTimeoutError'));
 }
 
-function parseHtml(html: string, url?: string): JSDOM {
+function parseHtml(html: string, url?: string, warnings: string[] = []): JSDOM {
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', (error: { message: string }) => {
-    if (!/stylesheet|css/i.test(error.message)) console.warn(error.message);
+    if (/stylesheet|css/i.test(error.message)) warnings.push(`css_parse_warning: ${error.message}`);
+    else console.warn(error.message);
   });
   return new JSDOM(html, { ...(url ? { url } : {}), virtualConsole });
 }
 
-export function normalizeFetchedPage(input: FetchedPageRecord): FetchedPageRecord {
+export function normalizeFetchedPage(input: FetchedPageRecord, options: { generic?: boolean } = {}): FetchedPageRecord {
   const normalized: FetchedPageRecord = {
     requestedUrl: input.requestedUrl,
     finalUrl: input.finalUrl,
     title: input.title,
     content: input.content,
     backend: input.backend,
-    evidence_clues: input.evidence_clues ?? {
-      is_suspected_reprint: false,
-      extracted_doc_no: null,
-      potential_official_urls: [],
-    },
+    ...(options.generic ? {} : {
+      evidence_clues: input.evidence_clues ?? {
+        is_suspected_reprint: false,
+        extracted_doc_no: null,
+        potential_official_urls: [],
+      },
+    }),
   };
 
   const optionalFields: Array<keyof Pick<
@@ -323,6 +330,10 @@ export function normalizeFetchedPage(input: FetchedPageRecord): FetchedPageRecor
     | 'publishedAt'
     | 'updatedAt'
     | 'lastVerifiedAt'
+    | 'statusCode'
+    | 'contentType'
+    | 'contentLength'
+    | 'truncated'
     | 'pageRenderMode'
     | 'accessSignals'
     | 'freshnessStatus'
@@ -334,6 +345,10 @@ export function normalizeFetchedPage(input: FetchedPageRecord): FetchedPageRecor
     'publishedAt',
     'updatedAt',
     'lastVerifiedAt',
+    'statusCode',
+    'contentType',
+    'contentLength',
+    'truncated',
     'pageRenderMode',
     'accessSignals',
     'freshnessStatus',
@@ -420,24 +435,30 @@ function buildEvidenceClues(args: {
   };
 }
 
-function extractMainArticleSync(html: string, url: string): HtmlExtractionResult {
+function cleanGenericContent(content: string): string {
+  return content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).join('\n');
+}
+
+function extractMainArticleSync(html: string, url: string, generic = false): HtmlExtractionResult {
   let dom: JSDOM | undefined;
+  const warnings: string[] = [];
   try {
-    dom = parseHtml(html, url);
+    dom = parseHtml(html, url, warnings);
     const documentTitle = dom.window.document.title?.trim() ?? '';
-    const officialUrls = extractPotentialOfficialUrls(dom.window.document, url);
+    const officialUrls = generic ? [] : extractPotentialOfficialUrls(dom.window.document, url);
     const rawText = dom.window.document.body?.textContent ?? '';
     const article = new Readability(dom.window.document).parse();
     const container = dom.window.document.createElement('div');
     container.innerHTML = article?.content ?? '';
     const result = {
       title: article?.title?.trim() || documentTitle,
-      content: cleanGovernmentContent(container.textContent || rawText),
+      content: generic ? cleanGenericContent(container.textContent || rawText) : cleanGovernmentContent(container.textContent || rawText),
       officialUrls,
+      warnings,
     };
     return result;
   } catch {
-    return { title: '', content: '', officialUrls: [] };
+    return { title: '', content: '', officialUrls: [], warnings };
   } finally {
     dom?.window.close();
   }
@@ -446,12 +467,13 @@ function extractMainArticleSync(html: string, url: string): HtmlExtractionResult
 async function extractMainArticle(
   html: string,
   url: string,
-  options: { signal?: AbortSignal; timeoutMs?: number; pool?: HtmlExtractionPool } = {},
+  options: { signal?: AbortSignal; timeoutMs?: number; pool?: HtmlExtractionPool; generic?: boolean } = {},
 ): Promise<HtmlExtractionResult> {
-  if (html.length < WORKER_THRESHOLD_CHARS) return extractMainArticleSync(html, url);
+  if (html.length < WORKER_THRESHOLD_CHARS) return extractMainArticleSync(html, url, options.generic);
   return await (options.pool ?? getDefaultExtractionPool()).extract(html, url, {
     signal: options.signal,
     timeoutMs: options.timeoutMs,
+    generic: options.generic,
   });
 }
 
@@ -459,7 +481,7 @@ export async function fetchWithLocalPrimary(
   url: string,
   maxChars = 20000,
   options: {
-    fetchImpl?: (url: string, init?: { headers?: Record<string, string>; signal?: AbortSignal }) => Promise<{ text: () => Promise<string>; url?: string }>;
+    fetchImpl?: (url: string, init?: { headers?: Record<string, string>; signal?: AbortSignal }) => Promise<{ text: () => Promise<string>; url?: string; status?: number; headers?: { get(name: string): string | null } }>;
     enableBrowserFallback?: boolean;
     browserAdapter?: BrowserAdapter;
     browserTimeoutMs?: number;
@@ -467,6 +489,7 @@ export async function fetchWithLocalPrimary(
     signal?: AbortSignal;
     extractionTimeoutMs?: number;
     extractionPool?: HtmlExtractionPool;
+    generic?: boolean;
   } = {},
 ): Promise<FetchedPageRecord> {
   assertSafeNetworkTarget(url);
@@ -478,7 +501,9 @@ export async function fetchWithLocalPrimary(
     } | string>;
   }).WebFetch;
 
-  const prompt = `Fetch this page and return the main policy text. Limit output to about ${maxChars} characters. Focus on the official body content and skip site chrome, login links, and prev/next navigation.`;
+  const prompt = options.generic
+    ? `Fetch this page and return its main readable content. Limit output to about ${maxChars} characters. Preserve the page's title, body text, and links needed to understand the source.`
+    : `Fetch this page and return the main policy text. Limit output to about ${maxChars} characters. Focus on the official body content and skip site chrome, login links, and prev/next navigation.`;
 
   if (typeof webFetch === 'function') {
     try {
@@ -489,23 +514,19 @@ export async function fetchWithLocalPrimary(
       });
 
       if (typeof response === 'string') {
-        const content = cleanGovernmentContent(response).slice(0, maxChars);
+        const content = (options.generic ? cleanGenericContent(response) : cleanGovernmentContent(response)).slice(0, maxChars);
         return normalizeFetchedPage({
           requestedUrl: url,
           finalUrl: url,
           title: '',
           content,
           backend: 'local-fetch-primary',
-          evidence_clues: buildEvidenceClues({
-            requestedUrl: url,
-            finalUrl: url,
-            title: '',
-            content,
-          }),
-        });
+          contentLength: new TextEncoder().encode(content).byteLength,
+          ...(options.generic ? {} : { evidence_clues: buildEvidenceClues({ requestedUrl: url, finalUrl: url, title: '', content }) }),
+        }, { generic: options.generic });
       }
 
-      const content = cleanGovernmentContent(response.content ?? '').slice(0, maxChars);
+      const content = (options.generic ? cleanGenericContent(response.content ?? '') : cleanGovernmentContent(response.content ?? '')).slice(0, maxChars);
       const finalUrl = response.finalUrl ?? url;
       assertSafeNetworkTarget(finalUrl);
       const title = response.title ?? '';
@@ -516,13 +537,9 @@ export async function fetchWithLocalPrimary(
         title,
         content,
         backend: 'local-fetch-primary',
-        evidence_clues: buildEvidenceClues({
-          requestedUrl: url,
-          finalUrl,
-          title,
-          content,
-        }),
-      });
+        contentLength: new TextEncoder().encode(content).byteLength,
+        ...(options.generic ? {} : { evidence_clues: buildEvidenceClues({ requestedUrl: url, finalUrl, title, content }) }),
+      }, { generic: options.generic });
     } catch (error) {
       if (isCancellation(error, options.signal)) throw error;
       if (typeof options.fetchImpl !== 'function') {
@@ -549,11 +566,21 @@ export async function fetchWithLocalPrimary(
   const fallbackText = rawFallbackText.slice(0, MAX_HTML_CHARS);
   const finalUrl = fallbackResponse.url ?? url;
   assertSafeNetworkTarget(finalUrl);
-  const extracted = await extractMainArticle(fallbackText, finalUrl, {
-    signal: options.signal,
-    timeoutMs: options.extractionTimeoutMs,
-    pool: options.extractionPool,
-  });
+  let extracted: HtmlExtractionResult = { title: '', content: '', officialUrls: [], warnings: [] };
+  let extractionWarnings: string[] = [];
+  try {
+    extracted = await extractMainArticle(fallbackText, finalUrl, {
+      signal: options.signal,
+      timeoutMs: options.extractionTimeoutMs,
+      pool: options.extractionPool,
+      generic: options.generic,
+    });
+    extractionWarnings = extracted.warnings ?? [];
+  } catch (error) {
+    if (isCancellation(error, options.signal)) throw error;
+    const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: unknown }).code) : 'HTML_EXTRACTION_FAILED';
+    extractionWarnings = [`static_extraction_failed: ${code}: ${error instanceof Error ? error.message : String(error)}`];
+  }
   const content = extracted.content.slice(0, maxChars);
   const title = extracted.title;
 
@@ -563,18 +590,17 @@ export async function fetchWithLocalPrimary(
     title,
     content,
     backend: 'local-fetch-primary',
-    evidence_clues: buildEvidenceClues({
-      requestedUrl: url,
-      finalUrl,
-      title,
-      content,
-      potentialOfficialUrls: extracted.officialUrls,
-    }),
+    statusCode: fallbackResponse.status,
+    contentType: fallbackResponse.headers?.get('content-type') ?? undefined,
+    contentLength: new TextEncoder().encode(rawFallbackText).byteLength,
+    truncated: htmlWasTruncated,
+    ...(options.generic ? {} : { evidence_clues: buildEvidenceClues({ requestedUrl: url, finalUrl, title, content, potentialOfficialUrls: extracted.officialUrls }) }),
     extractionWarnings: [
+      ...extractionWarnings,
       ...(htmlWasTruncated ? [`html_truncated: response exceeded ${MAX_HTML_CHARS} characters`] : []),
       ...(content.length < 400 ? ['static_extraction_weak: extracted content is too short for reliable evidence'] : []),
     ],
-  });
+  }, { generic: options.generic });
 
   if (!options.enableBrowserFallback) {
     return record;
@@ -585,12 +611,31 @@ export async function fetchWithLocalPrimary(
       if (signal?.aborted) {
         throw signal.reason ?? new DOMException('The operation was aborted', 'AbortError');
       }
-      return { title: record.title, content: record.content, finalUrl: record.finalUrl };
+      return {
+        title: record.title,
+        content: record.content,
+        finalUrl: record.finalUrl,
+        statusCode: record.statusCode,
+        contentType: record.contentType,
+        contentLength: record.contentLength,
+        truncated: record.truncated,
+        extractionWarnings: record.extractionWarnings,
+      };
     },
     browser: options.browserAdapter,
     timeoutMs: options.browserTimeoutMs,
     now: new Date().toISOString(),
     dateWindow: options.dateWindow,
     signal: options.signal,
+    derivePageFacts: !options.generic,
+    extractHtml: async (html, extractedUrl, extractionOptions) => {
+      const extracted = await extractMainArticle(html, extractedUrl, {
+        signal: extractionOptions.signal,
+        timeoutMs: extractionOptions.timeoutMs ?? options.extractionTimeoutMs,
+        pool: options.extractionPool,
+        generic: options.generic,
+      });
+      return { title: extracted.title, content: extracted.content, warnings: extracted.warnings };
+    },
   });
 }

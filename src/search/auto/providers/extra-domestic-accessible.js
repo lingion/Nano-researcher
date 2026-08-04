@@ -1,3 +1,6 @@
+import { fetchJson } from './http.js';
+import { createProviderSession } from './session.js';
+
 export async function searchYandex(query, context = {}) {
   const session = createProviderSession({ ...context, maxRequests: 1 });
   const url = `https://yandex.com/search/site/?tmpl_version=releases&text=${encodeURIComponent(query)}&web=1&frame=1&searchid=3131712&lang=en`;
@@ -41,10 +44,19 @@ export async function searchMojeek(query, context = {}) {
 export async function searchDogpile(query, context = {}) {
   const started = Date.now();
   try {
-    const response = await fetch('https://www.dogpile.com/api/search', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', 'user-agent': 'Mozilla/5.0' }, body: JSON.stringify({ q: query, qadf: 'moderate', page: 1 }), signal: context.signal });
-    const data = await response.json();
+    const { data, response, retryCount } = await fetchJson('https://www.dogpile.com/api/search', {
+      fetchImpl: context.fetchImpl,
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ q: query, qadf: 'moderate', page: 1 }),
+      signal: context.signal,
+      timeoutMs: context.timeoutMs,
+      maxBytes: context.maxBytes,
+      retries: context.retries,
+      retryDelayMs: context.retryDelayMs,
+    });
     const records = (Array.isArray(data.results) ? data.results : []).slice(0, context.limit || 10).map((item, index) => ({ title: clean(item.title), url: item.clickUrl, snippet: clean(item.description), provider: 'dogpile', rank: index + 1 })).filter((item) => item.title && /^https?:\/\//i.test(item.url || ''));
-    return { records, provider: 'dogpile', durationMs: Date.now() - started, diagnostics: { status: response.status, parserVersion: 'searxng-dogpile-v1' } };
+    return { records, provider: 'dogpile', durationMs: Date.now() - started, retryCount, diagnostics: { status: response.status, parserVersion: 'searxng-dogpile-v1', requestCount: 1, retryCount } };
   } catch (error) { return { records: [], provider: 'dogpile', durationMs: Date.now() - started, diagnostics: { error: { code: 'ENGINE_FAILED', message: error instanceof Error ? error.message : String(error) } } }; }
 }
 
@@ -71,4 +83,3 @@ function parseMojeek(html, limit = 10) { return parseCards(html, /<li\b[^>]*clas
 function parseCards(html, cardRe, anchorClass, limit) { const records = []; for (const match of String(html).matchAll(cardRe)) { if (records.length >= (limit || 10)) break; const card = match[1]; const anchor = card.match(new RegExp(`<a[^>]+class=["'][^"']*${anchorClass}[\s\S]*?</a>`, 'i')); const href = card.match(/\b(?:href|data-url)=["'](https?:\/\/[^"']+)/i)?.[1] || anchor?.[0]?.match(/\bhref=["'](https?:\/\/[^"']+)/i)?.[1]; const title = clean(anchor?.[0] || card.match(/<h[234][^>]*>([\s\S]*?)<\/h[234]>/i)?.[1] || ''); const snippet = clean(card.match(/<(?:p|div|span)[^>]*class=["'][^"']*(?:text|content|snippet|description|body|s)[^"']*["'][^>]*>([\s\S]*?)<\//i)?.[1] || ''); if (title && /^https?:\/\//i.test(href || '')) records.push({ title, url: href, snippet, rank: records.length + 1 }); } return { records }; }
 
 function clean(value) { return String(value || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/\s+/g, ' ').trim(); }
-import { createProviderSession } from './session.js';

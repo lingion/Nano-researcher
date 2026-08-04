@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { buildGenericReport, writeGenericReport } from '../../src/artifacts/generic-report.ts';
+import { buildGenericReport, renderGenericReportMarkdown, writeGenericReport } from '../../src/artifacts/generic-report.ts';
 import type { AgentResult } from '../../src/agent/types.ts';
 
 test('generic report does not count uncited successful fetches as validated evidence', () => {
@@ -66,6 +66,18 @@ function completedReport() {
   };
   return buildGenericReport('run_atomic', 'completed', result, []);
 }
+
+test('generic report uses the exact Nano-researcher product name', async () => {
+  const report = completedReport();
+  assert.match(renderGenericReportMarkdown(report), /^# Nano-researcher Report/m);
+  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'generic-report-branding-'));
+  try {
+    const paths = await writeGenericReport(outputDir, report);
+    assert.match(await fs.readFile(paths.htmlPath, 'utf8'), /<title>Nano-researcher Report<\/title>/);
+  } finally {
+    await fs.rm(outputDir, { recursive: true, force: true });
+  }
+});
 
 test('generic report publishes the three files as one directory bundle', async () => {
   const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'generic-report-bundle-'));

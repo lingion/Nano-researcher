@@ -51,7 +51,7 @@ export function createGenericLlmProvider(env: GenericRuntimeEnv = process.env): 
 }
 
 export function createGenericSearchProvider(): SearchProvider {
-  return new AutoSearchProvider({ engines: builtInSearchEngines, maxEngineCalls: 8, primaryEngineCount: 5, minResultsBeforeExpansion: 8, deadlineMs: 15_000, limit: 12 });
+  return new AutoSearchProvider({ engines: builtInSearchEngines, maxEngineCalls: 8, deadlineMs: 15_000, limit: 12 });
 }
 
 export function createGenericFetchProvider(): FetchProvider {
@@ -67,6 +67,7 @@ export function createGenericFetchProvider(): FetchProvider {
           signal: options?.signal,
           enableBrowserFallback: true,
           browserAdapter,
+          generic: true,
         });
         return {
           outcome: page.content.trim() ? 'success_with_content' : 'success_empty',
@@ -75,6 +76,9 @@ export function createGenericFetchProvider(): FetchProvider {
           title: page.title,
           content: page.content,
           provider: 'local-fetch-primary',
+          contentType: page.contentType,
+          contentLength: page.contentLength ?? new TextEncoder().encode(page.content).byteLength,
+          truncated: page.truncated,
           renderMode: page.pageRenderMode === 'playwright' ? 'browser' : 'static',
           extractionWarnings: page.extractionWarnings ?? [],
           durationMs: Date.now() - started,

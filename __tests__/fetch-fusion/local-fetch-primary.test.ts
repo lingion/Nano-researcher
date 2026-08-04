@@ -5,6 +5,7 @@ import { performance } from 'node:perf_hooks';
 
 import {
   createHtmlExtractionPool,
+  fetchWithLocalPrimary,
   normalizeFetchedPage,
   type HtmlExtractionWorker,
 } from '../../src/fetch-fusion/local-fetch-primary.ts';
@@ -112,6 +113,17 @@ test('fetch fusion preserves optional provenance and validation fields during no
   });
 });
 
+test('generic normalization does not inject legacy evidence clues', () => {
+  const page = normalizeFetchedPage({
+    requestedUrl: 'https://example.com/generic',
+    finalUrl: 'https://example.com/generic',
+    title: 'Generic',
+    content: 'generic content',
+    backend: 'generic',
+  }, { generic: true });
+  assert.equal(page.evidence_clues, undefined);
+});
+
 test('local fetch primary rejects loopback targets before invoking network clients', async () => {
   const original = (globalThis as { WebFetch?: unknown }).WebFetch;
   let webFetchCalls = 0;
@@ -188,6 +200,116 @@ test('local fetch primary wrapper uses global WebFetch when available', async ()
     } else {
       (globalThis as { WebFetch?: unknown }).WebFetch = original;
     }
+  }
+});
+
+test('generic fetch keeps generic page content and does not inject policy-specific fetch instructions', async () => {
+  const original = (globalThis as { WebFetch?: unknown }).WebFetch;
+  const calls: Array<{ prompt: string }> = [];
+  (globalThis as { WebFetch?: (input: { url: string; prompt: string }) => Promise<{ content: string }> }).WebFetch = async ({ prompt }) => {
+    calls.push({ prompt });
+    return { content: '上一篇\nmain page content\n下一篇' };
+  };
+  try {
+    const { fetchWithLocalPrimary } = await import('../../src/fetch-fusion/local-fetch-primary.ts');
+    const result = await fetchWithLocalPrimary('https://example.com/page', 20000, { generic: true });
+    assert.doesNotMatch(calls[0]?.prompt ?? '', /policy|official body/i);
+    assert.match(result.content, /上一篇/);
+    assert.match(result.content, /下一篇/);
+    assert.equal(result.accessSignals, undefined);
+  } finally {
+    if (original === undefined) delete (globalThis as { WebFetch?: unknown }).WebFetch;
+    else (globalThis as { WebFetch?: unknown }).WebFetch = original;
+  }
+});
+
+test('static extraction failure becomes a warning and still reaches browser fallback', async () => {
+  const original = (globalThis as { WebFetch?: unknown }).WebFetch;
+  delete (globalThis as { WebFetch?: unknown }).WebFetch;
+  let browserCalls = 0;
+  try {
+    const { fetchWithLocalPrimary } = await import('../../src/fetch-fusion/local-fetch-primary.ts');
+    const result = await fetchWithLocalPrimary('https://example.com/dynamic', 20000, {
+      generic: true,
+      enableBrowserFallback: true,
+      extractionPool: {
+        extract: async () => { throw Object.assign(new Error('stylesheet parser failed'), { code: 'HTML_EXTRACTION_FAILED' }); },
+        close: async () => undefined,
+      },
+      fetchImpl: async (url) => ({ url, text: async () => `<html><body>${'x'.repeat(120_000)}</body></html>` }),
+      browserAdapter: {
+        render: async () => {
+          browserCalls += 1;
+          return { finalUrl: 'https://example.com/dynamic', title: 'Dynamic', text: 'rendered dynamic body '.repeat(80) };
+        },
+        close: async () => undefined,
+      },
+    });
+    assert.equal(browserCalls, 1);
+    assert.equal(result.pageRenderMode, 'playwright');
+    assert.match(result.content, /rendered dynamic body/);
+    assert.match(result.extractionWarnings?.[0] ?? '', /static_extraction_failed/);
+  } finally {
+    if (original !== undefined) (globalThis as { WebFetch?: unknown }).WebFetch = original;
+  }
+});
+
+test('browser HTML fallback uses the same generic extraction boundary', async () => {
+  const original = (globalThis as { WebFetch?: unknown }).WebFetch;
+  delete (globalThis as { WebFetch?: unknown }).WebFetch;
+  const extractedHtml: string[] = [];
+  try {
+    const page = await fetchWithLocalPrimary('https://example.com/app', 2_000, {
+      generic: true,
+      enableBrowserFallback: true,
+      fetchImpl: async () => ({
+        status: 200,
+        url: 'https://example.com/app',
+        headers: { get: () => 'text/html' },
+        text: async () => `<html><head><title>Static</title></head><body>${'enable javascript '.repeat(1_000)}</body></html>`,
+      }),
+      browserAdapter: {
+        render: async () => ({
+          title: 'Rendered shell',
+          text: 'fallback text',
+          html: `<html><head><title>Article</title></head><body><nav>Navigation</nav><article>Official article body from rendered HTML. ${'article '.repeat(20_000)}</article></body></html>`,
+        }),
+        close: async () => undefined,
+      },
+      extractionPool: {
+        extract: async (html) => {
+          extractedHtml.push(html);
+          return { title: 'Article', content: 'Official article body from rendered HTML.', officialUrls: [], warnings: [] };
+        },
+        close: async () => undefined,
+      },
+    });
+    assert.equal(extractedHtml.length, 1);
+    assert.match(extractedHtml[0]!, /<article>/);
+    assert.equal(page.content, 'Official article body from rendered HTML.');
+    assert.equal(page.evidence_clues, undefined);
+  } finally {
+    if (original !== undefined) (globalThis as { WebFetch?: unknown }).WebFetch = original;
+  }
+});
+
+test('static extraction failure remains explicit when browser fallback is disabled', async () => {
+  const original = (globalThis as { WebFetch?: unknown }).WebFetch;
+  delete (globalThis as { WebFetch?: unknown }).WebFetch;
+  try {
+    const { fetchWithLocalPrimary } = await import('../../src/fetch-fusion/local-fetch-primary.ts');
+    const result = await fetchWithLocalPrimary('https://example.com/broken', 20000, {
+      generic: true,
+      extractionPool: {
+        extract: async () => { throw Object.assign(new Error('css parse failed'), { code: 'HTML_EXTRACTION_FAILED' }); },
+        close: async () => undefined,
+      },
+      fetchImpl: async (url) => ({ url, text: async () => `<html><body>${'x'.repeat(120_000)}</body></html>` }),
+    });
+    assert.equal(result.content, '');
+    assert.match(result.extractionWarnings?.[0] ?? '', /static_extraction_failed/);
+  } finally {
+    if (original !== undefined) (globalThis as { WebFetch?: unknown }).WebFetch = original;
   }
 });
 

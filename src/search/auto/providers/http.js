@@ -79,14 +79,15 @@ async function fetchAttempt(url, options) {
   const timeout = requestSignal(options.signal, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   try {
     const response = await fetchImpl(url, {
-      method: "GET",
+      method: options.method ?? "GET",
       headers: {
         accept: "text/html,application/xhtml+xml,*/*;q=0.8",
         "user-agent": DEFAULT_DESKTOP_UA,
         ...options.headers
       },
       signal: timeout.signal,
-      redirect: options.redirect ?? "follow"
+      redirect: options.redirect ?? "follow",
+      ...(options.body !== undefined ? { body: options.body } : {})
     });
 
     if (!response || response.status < 200 || response.status >= 300) {
@@ -109,6 +110,14 @@ async function fetchAttempt(url, options) {
   }
 }
 
+function attachRetryCount(error, retryCount) {
+  if (error && typeof error === "object") {
+    error.retryCount = retryCount;
+    return error;
+  }
+  return new ProviderFetchError("network_error", String(error || "Provider request failed"), { retryCount });
+}
+
 export async function fetchText(url, options = {}) {
   const requestedRetries = Number(options.retries ?? DEFAULT_RETRIES);
   const retries = Number.isFinite(requestedRetries)
@@ -125,10 +134,10 @@ export async function fetchText(url, options = {}) {
       const result = await fetchAttempt(url, options);
       return { ...result, retryCount: attempt };
     } catch (error) {
-      lastError = error;
+      lastError = attachRetryCount(error, attempt);
       const retryable = error?.code === "network_error" ||
         (error?.code === "http_status" && RETRYABLE_STATUSES.has(error.status));
-      if (!retryable || attempt >= retries) throw error;
+      if (!retryable || attempt >= retries) throw lastError;
       if (retryDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
     }
   }
@@ -137,7 +146,7 @@ export async function fetchText(url, options = {}) {
 }
 
 export async function fetchJson(url, options = {}) {
-  const { text, response } = await fetchText(url, {
+  const { text, response, retryCount } = await fetchText(url, {
     ...options,
     headers: {
       accept: "application/json,text/plain,*/*",
@@ -145,7 +154,7 @@ export async function fetchJson(url, options = {}) {
     }
   });
   try {
-    return { data: JSON.parse(text), response };
+    return { data: JSON.parse(text), response, retryCount };
   } catch (error) {
     throw new ProviderFetchError("invalid_json", "Provider returned invalid JSON", {
       url,

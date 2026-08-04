@@ -1,5 +1,5 @@
 import { DEFAULT_DESKTOP_UA, fetchText } from "./http.js";
-import { diagnoseHtml, prepareProviderQuery, providerFailure, providerLimit, providerSuccess } from "./result.js";
+import { attemptDiagnostic, diagnoseHtml, prepareProviderQuery, providerFailure, providerLimit, providerSuccess } from "./result.js";
 import { parseBingHtml } from "./parsers.js";
 
 const BING_URLS = ["https://cn.bing.com/search", "https://www.bing.com/search"];
@@ -7,7 +7,9 @@ const BING_URLS = ["https://cn.bing.com/search", "https://www.bing.com/search"];
 export async function searchBing(rawQuery, context = {}) {
   const { text } = prepareProviderQuery(rawQuery);
   const limit = providerLimit(context.limit);
+  const started = Date.now();
   let last;
+  const attemptDiagnostics = [];
   for (const baseUrl of BING_URLS) {
     const url = new URL(baseUrl);
     url.searchParams.set("q", text);
@@ -19,7 +21,7 @@ export async function searchBing(rawQuery, context = {}) {
     url.searchParams.set("mkt", "zh-CN");
     url.searchParams.set("form", "QBLH");
     try {
-      const { text: html, response } = await fetchText(url.toString(), {
+      const { text: html, response, retryCount } = await fetchText(url.toString(), {
         fetchImpl: context.fetchImpl,
         headers: {
           accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -49,11 +51,21 @@ export async function searchBing(rawQuery, context = {}) {
         diagnostics.blockReason = "redirected_to_homepage";
         diagnostics.parseFailures = 0;
       }
-      last = providerSuccess({ provider: "bing", sourceFamily: "general-web", resultType: "web", records, response, url: url.toString(), diagnostics });
+      attemptDiagnostics.push(attemptDiagnostic({ url: url.toString(), response, records, diagnostics, retryCount }));
+      last = providerSuccess({
+        provider: "bing",
+        sourceFamily: "general-web",
+        resultType: "web",
+        records,
+        response,
+        url: url.toString(),
+        diagnostics: { ...diagnostics, durationMs: Date.now() - started, requestCount: attemptDiagnostics.length, retryCount, attempts: attemptDiagnostics }
+      });
       if (records.length || (!diagnostics.blocked && !diagnostics.parseFailures)) return last;
     } catch (error) {
-      last = providerFailure({ provider: "bing", url: url.toString(), error });
+      attemptDiagnostics.push(attemptDiagnostic({ url: url.toString(), error }));
+      last = providerFailure({ provider: "bing", url: url.toString(), error, diagnostics: { durationMs: Date.now() - started, requestCount: attemptDiagnostics.length, attempts: attemptDiagnostics } });
     }
   }
-  return last;
+  return last || providerFailure({ provider: "bing", url: BING_URLS[0], error: new Error("Bing returned no usable response"), diagnostics: { durationMs: Date.now() - started } });
 }

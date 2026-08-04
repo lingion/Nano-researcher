@@ -46,6 +46,9 @@ export interface SearchResult {
   snippet: string;
   provider: string;
   rank?: number;
+  providerRank?: number;
+  sourceFamily?: string;
+  resultType?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -64,6 +67,8 @@ export interface SearchResponse {
     durationMs: number;
     uniqueResultCount?: number;
     duplicateResultCount?: number;
+    filteredResultCount?: number;
+    outputLimitedCount?: number;
     successfulEngineCount?: number;
     blockedEngineCount?: number;
   };

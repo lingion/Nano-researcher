@@ -43,24 +43,113 @@ export const builtInSearchEngines = [
   new SearchResponseEngine('dogpile', ['general-web', 'multi-source'], async (query, context): Promise<SearchResponse> => normalizeResponse(await searchDogpile(query, contextForEngine(context)), query, 'dogpile')),
 ];
 
-function normalizeResponse(value: { records?: Array<Record<string, unknown>>; diagnostics?: Record<string, unknown>; provider?: string } | undefined, query: string, provider: string): SearchResponse {
+type RawProviderResponse = {
+  records?: Array<Record<string, unknown>>;
+  diagnostics?: Record<string, unknown>;
+  provider?: string;
+  durationMs?: number;
+  retryCount?: number;
+  error?: { code: string; message: string };
+};
+
+export function normalizeResponse(value: RawProviderResponse | undefined, query: string, provider: string): SearchResponse {
   value = value ?? {};
-  const records = value.records ?? [];
-  return {
-    outcome: records.length ? 'success_with_content' : 'success_empty',
-    results: records.map((record, index) => ({
-      query,
-      title: String(record.title ?? record.url ?? 'Untitled result'),
-      url: String(record.url ?? ''),
-      snippet: String(record.snippet ?? ''),
-      provider,
-      rank: index + 1,
-      metadata: { sourceFamily: record.sourceFamily, resultType: record.resultType, score: record.score },
-    })).filter((item) => item.url),
+  const rawRecords = value.records;
+  const records = Array.isArray(rawRecords) ? rawRecords : [];
+  const normalizedResults = records.map((record, index) => ({
+    query,
+    title: String(record.title ?? record.url ?? 'Untitled result'),
+    url: String(record.url ?? ''),
+    snippet: String(record.snippet ?? ''),
+    provider: String(record.provider ?? provider),
+    rank: finiteNumber(record.rank) ?? index + 1,
+    providerRank: finiteNumber(record.providerRank) ?? finiteNumber(record.rank) ?? index + 1,
+    ...(typeof record.sourceFamily === 'string' ? { sourceFamily: record.sourceFamily } : {}),
+    ...(typeof record.resultType === 'string' ? { resultType: record.resultType } : {}),
+    metadata: {
+      ...(record.score === undefined ? {} : { score: record.score }),
+      ...(record.metadata && typeof record.metadata === 'object' ? record.metadata as Record<string, unknown> : {}),
+    },
+  })).filter((item) => item.url);
+  const rawDiagnostics = value.diagnostics ?? {};
+  const explicitError = value.error ?? asError(rawDiagnostics.error);
+  const parserError = !normalizedResults.length && (records.length > 0 || rawRecords !== undefined && !Array.isArray(rawRecords))
+    ? { code: 'PARSER_FAILURE', message: 'Provider response contained no usable result URLs' }
+    : undefined;
+  const rawError = explicitError ?? diagnosticError(rawDiagnostics) ?? parserError;
+  const outcome = rawError ? classifyEmptyOutcome(rawDiagnostics, rawError) : normalizedResults.length ? 'success_with_content' : classifyEmptyOutcome(rawDiagnostics);
+  const retryCount = Math.max(finiteNumber(value.retryCount) ?? 0, finiteNumber(rawDiagnostics.retryCount) ?? 0, sumAttemptField(rawDiagnostics, 'retryCount'));
+  const durationMs = finiteNumber(value.durationMs) ?? finiteNumber(rawDiagnostics.durationMs) ?? 0;
+  const details = { ...rawDiagnostics };
+  if (rawError) details.error = rawError;
+  const diagnostic = {
     provider,
-    durationMs: 0,
-    retryCount: 0,
-    diagnostics: value.diagnostics ? [{ provider, outcome: records.length ? 'success_with_content' : 'success_empty', durationMs: 0, resultCount: records.length, details: value.diagnostics }] : undefined,
-    ...(value.diagnostics?.error ? { error: value.diagnostics.error as { code: string; message: string } } : {}),
+    outcome,
+    durationMs,
+    resultCount: normalizedResults.length,
+    requestCount: Math.max(finiteNumber(rawDiagnostics.requestCount) ?? 0, attemptRequestCount(rawDiagnostics), attemptCount(rawDiagnostics)) || 1,
+    details,
+    ...(rawError ? { error: rawError } : {}),
   };
+  return {
+    outcome,
+    results: normalizedResults,
+    provider,
+    durationMs,
+    retryCount,
+    diagnostics: [diagnostic],
+    ...(rawError ? { error: rawError } : {}),
+  };
+}
+
+function classifyEmptyOutcome(diagnostics: Record<string, unknown>, error?: { code: string; message: string }): SearchResponse['outcome'] {
+  if (diagnostics.blocked === true) return 'http_error';
+  if (error) {
+    if (error.code === 'timeout') return 'timeout';
+    if (error.code === 'cancelled') return 'cancelled';
+    if (error.code === 'http_status' || Number(diagnostics.status) >= 400) return 'http_error';
+    return 'transport_error';
+  }
+  if (Number(diagnostics.status) >= 400) return 'http_error';
+  if ((finiteNumber(diagnostics.parseFailures) ?? 0) > 0) return 'transport_error';
+  return 'success_empty';
+}
+
+function diagnosticError(diagnostics: Record<string, unknown>): { code: string; message: string } | undefined {
+  if (diagnostics.blocked === true) {
+    return { code: 'PROVIDER_BLOCKED', message: String(diagnostics.blockReason || 'Provider blocked the request') };
+  }
+  if (Number(diagnostics.status) >= 400) {
+    return { code: 'HTTP_STATUS', message: `Provider returned HTTP ${diagnostics.status}` };
+  }
+  if ((finiteNumber(diagnostics.parseFailures) ?? 0) > 0) {
+    return { code: 'PARSER_FAILURE', message: 'Provider response could not be parsed into search results' };
+  }
+  return undefined;
+}
+
+function asError(value: unknown): { code: string; message: string } | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.code !== 'string' || typeof candidate.message !== 'string') return undefined;
+  return { code: candidate.code, message: candidate.message };
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
+}
+
+function attemptCount(diagnostics: Record<string, unknown>): number {
+  return Array.isArray(diagnostics.attempts) ? Math.max(0, diagnostics.attempts.length) : 0;
+}
+
+function sumAttemptField(diagnostics: Record<string, unknown>, field: string): number {
+  if (!Array.isArray(diagnostics.attempts)) return 0;
+  return diagnostics.attempts.reduce((sum, item) => sum + (item && typeof item === 'object' ? finiteNumber((item as Record<string, unknown>)[field]) ?? 0 : 0), 0);
+}
+
+function attemptRequestCount(diagnostics: Record<string, unknown>): number {
+  if (!Array.isArray(diagnostics.attempts)) return 0;
+  return diagnostics.attempts.reduce((sum, item) => sum + 1 + (item && typeof item === 'object' ? finiteNumber((item as Record<string, unknown>).retryCount) ?? 0 : 0), 0);
 }

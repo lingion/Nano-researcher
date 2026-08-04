@@ -26,9 +26,15 @@ export function providerSuccess({ provider, sourceFamily, resultType, records, r
     resultType: record.resultType || resultType,
     providerRank: index + 1
   }));
+  const attempts = Array.isArray(diagnostics.attempts) ? diagnostics.attempts : [attemptDiagnostic({ url, response, records, diagnostics, retryCount: diagnostics.retryCount ?? 0 })];
+  const attemptRetryCount = sumAttempts(attempts, "retryCount");
+  const attemptRequestCount = sumRequests(attempts);
+  const retryCount = Math.max(Number(diagnostics.retryCount) || 0, attemptRetryCount);
+  const requestCount = Math.max(Number(diagnostics.requestCount) || 0, attemptRequestCount);
   return {
     provider,
     attempted: true,
+    durationMs: Number(diagnostics.durationMs) || 0,
     records: normalized,
     diagnostics: {
       status: response?.status ?? null,
@@ -39,7 +45,10 @@ export function providerSuccess({ provider, sourceFamily, resultType, records, r
       blocked: diagnostics.blocked ?? false,
       blockReason: diagnostics.blockReason || "",
       markupFound: diagnostics.markupFound ?? true,
-      requestCount: diagnostics.requestCount ?? 1
+      ...(diagnostics.durationMs !== undefined ? { durationMs: diagnostics.durationMs } : {}),
+      requestCount: requestCount || 1,
+      retryCount,
+      attempts
     }
   };
 }
@@ -63,10 +72,16 @@ export function diagnoseHtml({ provider, html, responseUrl, recordCount }) {
   };
 }
 
-export function providerFailure({ provider, url, error }) {
+export function providerFailure({ provider, url, error, diagnostics = {} }) {
+  const attempts = Array.isArray(diagnostics.attempts) ? diagnostics.attempts : [attemptDiagnostic({ url, error, diagnostics, retryCount: diagnostics.retryCount ?? error?.retryCount ?? 0 })];
+  const attemptRetryCount = sumAttempts(attempts, "retryCount");
+  const attemptRequestCount = sumRequests(attempts);
+  const retryCount = Math.max(Number(diagnostics.retryCount) || 0, attemptRetryCount);
+  const requestCount = Math.max(Number(diagnostics.requestCount) || 0, attemptRequestCount);
   return {
     provider,
     attempted: true,
+    durationMs: Number(diagnostics.durationMs) || 0,
     records: [],
     diagnostics: {
       status: error?.status ?? null,
@@ -78,7 +93,45 @@ export function providerFailure({ provider, url, error }) {
         code: error?.code || "provider_error",
         message: error?.message || "Provider request failed"
       },
-      url
+      url,
+      ...(diagnostics.durationMs !== undefined ? { durationMs: diagnostics.durationMs } : {}),
+      requestCount: requestCount || 1,
+      retryCount,
+      attempts
     }
   };
+}
+
+export function attemptDiagnostic({ url, response = undefined, records = [], diagnostics = {}, error, retryCount = error?.retryCount ?? 0 }) {
+  const outcome = records.length
+    ? "success_with_content"
+    : diagnostics.blocked
+      ? "http_error"
+      : error?.code === "timeout"
+        ? "timeout"
+      : error?.code === "cancelled"
+        ? "cancelled"
+        : error?.code === "http_status" || Number(error?.status) >= 400 || Number(response?.status) >= 400
+          ? "http_error"
+        : error || diagnostics.parseFailures
+            ? "transport_error"
+            : "success_empty";
+  return {
+    url,
+    responseUrl: response?.url || null,
+    status: response?.status ?? error?.status ?? null,
+    outcome,
+    resultCount: records.length,
+    retryCount: Number(retryCount) || 0,
+    ...(diagnostics.blocked ? { blocked: true, blockReason: diagnostics.blockReason || "" } : {}),
+    ...(error ? { error: { code: error.code || "provider_error", message: error.message || String(error) } } : {})
+  };
+}
+
+function sumAttempts(attempts, field) {
+  return attempts.reduce((sum, attempt) => sum + (attempt && typeof attempt === "object" ? Number(attempt[field]) || 0 : 0), 0);
+}
+
+function sumRequests(attempts) {
+  return attempts.reduce((sum, attempt) => sum + 1 + (attempt && typeof attempt === "object" ? Number(attempt.retryCount) || 0 : 0), 0);
 }

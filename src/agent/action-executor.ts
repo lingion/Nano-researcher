@@ -131,9 +131,17 @@ export async function executeAgentActions(
       ? () => dependencies.evidenceStore!.saveFetchedPage!(response)
       : undefined, dependencies);
     dependencies.onEvent?.({ type: 'fetch.result', payload: {
-      url: action.url,
+      requestedUrl: response.requestedUrl,
+      finalUrl: response.finalUrl,
+      provider: response.provider,
       outcome: response.outcome,
-      contentLength: response.content.length,
+      ...(response.contentType ? { contentType: response.contentType } : {}),
+      contentLength: response.contentLength ?? response.content.length,
+      truncated: response.truncated === true,
+      ...(response.renderMode ? { renderMode: response.renderMode } : {}),
+      durationMs: response.durationMs,
+      retryCount: response.retryCount,
+      extractionWarnings: response.extractionWarnings,
       ...(response.error ? { error: response.error } : {}),
     } });
     return response;

@@ -40,7 +40,7 @@ export function createGenericMcpServer(env: NodeJS.ProcessEnv = process.env): Se
     search: createGenericSearchProvider(),
     fetch: createGenericFetchProvider(),
   }, { runTimeoutMs });
-  const server = new Server({ name: 'generic-research-agent', version: '0.1.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'nano-researcher', version: '0.1.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: genericResearchToolDefinitions(exposeAtomicTools),
   }));

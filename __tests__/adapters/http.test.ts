@@ -1,4 +1,7 @@
 import test from 'node:test';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import assert from 'node:assert/strict';
 import { createResearchHttpServer } from '../../src/adapters/http/server.ts';
 import { assertSafeHttpExposure, isLoopbackHost } from '../../src/adapters/http/exposure.ts';
@@ -46,6 +49,8 @@ test('HTTP deployment requires external authentication off loopback and protects
   try {
     assert.equal((await fetch(`http://127.0.0.1:${port}/v1/health`)).status, 200);
     assert.equal((await fetch(`http://127.0.0.1:${port}/monitor`)).status, 200);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/monitor/run_test`)).status, 200);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/monitor?runId=run_test`)).status, 200);
     assert.equal((await fetch(`http://127.0.0.1:${port}/v1/research`)).status, 401);
     assert.equal((await fetch(`http://127.0.0.1:${port}/v1/research`, { headers: { authorization: 'Bearer wrong' } })).status, 401);
     assert.equal((await fetch(`http://127.0.0.1:${port}/v1/research`, { headers: { authorization: 'Bearer external-secret' } })).status, 200);
@@ -145,5 +150,37 @@ test('HTTP cancellation is idempotent for existing runs and reserves 404 for unk
     assert.equal((await fetch(`http://127.0.0.1:${port}/v1/research/run_missing/cancel`, { method: 'POST' })).status, 404);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test('report endpoints derive files inside the configured report root', async () => {
+  const reportRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nano-researcher-report-root-'));
+  const runId = 'run_report_safe';
+  const reportDir = path.join(reportRoot, runId, 'report');
+  await fs.mkdir(reportDir, { recursive: true });
+  await fs.writeFile(path.join(reportDir, 'report.json'), '{"safe":true}\n', 'utf8');
+  const run = {
+    runId, status: 'completed', task: { question: 'report' }, createdAt: '2026-08-04T00:00:00.000Z', reportStatus: 'completed',
+    report: { jsonPath: '/etc/hosts', markdownPath: '/etc/hosts', htmlPath: '/etc/hosts' }, events: [],
+  };
+  const manager = { list: () => [run], get: (id: string) => id === runId ? run : undefined, events: () => [], start: () => run, cancel: () => false } as any;
+  const server = createResearchHttpServer({
+    llm: { complete: async () => { throw new Error('unused'); } },
+    search: { name: 'search', search: async () => { throw new Error('unused'); } },
+    fetch: { name: 'fetch', fetch: async () => { throw new Error('unused'); } },
+  }, manager, { reportRoot });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const safe = await fetch(`http://127.0.0.1:${port}/v1/research/${runId}/report/json`);
+    assert.equal(safe.status, 200);
+    assert.deepEqual(await safe.json(), { safe: true });
+    await fs.rm(path.join(reportDir, 'report.json'));
+    await fs.symlink('/etc/hosts', path.join(reportDir, 'report.json'));
+    const symlinkEscape = await fetch(`http://127.0.0.1:${port}/v1/research/${runId}/report/json`);
+    assert.equal(symlinkEscape.status, 404);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await fs.rm(reportRoot, { recursive: true, force: true });
   }
 });

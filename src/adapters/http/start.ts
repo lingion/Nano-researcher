@@ -15,6 +15,6 @@ const dependencies = { llm: createGenericLlmProvider(), search: createGenericSea
 const outputDir = process.env.RESEARCH_OUTPUT_DIR ?? './artifacts/runs';
 const manager = new ResearchRunManager(dependencies, 100, outputDir, process.env.RESEARCH_EVIDENCE_DIR ?? `${outputDir}/evidence`, undefined, parseResearchRunTimeoutMs());
 await manager.hydrate();
-const server = createResearchHttpServer(dependencies, manager, { exposeAtomicTools: process.env.RESEARCH_EXPOSE_ATOMIC_TOOLS === '1', authToken });
+const server = createResearchHttpServer(dependencies, manager, { exposeAtomicTools: process.env.RESEARCH_EXPOSE_ATOMIC_TOOLS === '1', authToken, reportRoot: outputDir });
 server.on('close', () => { void fetchProvider.close?.(); });
 server.listen(port, host, () => console.error(`generic research HTTP server listening on ${host}:${port}`));

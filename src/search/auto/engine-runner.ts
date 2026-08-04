@@ -14,20 +14,38 @@ export class SearchResponseEngine implements AutoEngine {
     const started = Date.now();
     try {
       const response = await this.implementation(query, context);
+      const diagnostics = response.diagnostics ?? [];
+      const attempts = diagnostics.flatMap((item) => {
+        const nested = item.details?.attempts;
+        if (Array.isArray(nested)) return nested;
+        return item.details?.url ? [item.details] : [];
+      });
+      const observedAttemptCount = attempts.length || diagnostics.length;
+      const requestCount = diagnostics.reduce((sum, item) => sum + finiteNonNegative(item.requestCount), 0) || Math.max(1, observedAttemptCount);
+      const retryCount = Math.max(
+        finiteNonNegative(response.retryCount),
+        attempts.reduce((sum, attempt) => sum + finiteNonNegative(attempt.retryCount), 0),
+      );
+      const detailSource = diagnostics.at(-1)?.details;
+      const details = {
+        ...(detailSource || {}),
+        attemptCount: observedAttemptCount,
+        ...(attempts.length ? { attempts } : {}),
+      };
       return {
         engine: this.name,
-        outcome: response.outcome === 'timeout' ? 'timeout' : response.outcome === 'transport_error' ? 'transport_error' : response.outcome as Exclude<import('../../agent/types.ts').ToolOutcome, 'protocol_error' | 'cancelled'>,
+        outcome: response.outcome === 'protocol_error' ? 'transport_error' : response.outcome as Exclude<import('../../agent/types.ts').ToolOutcome, 'protocol_error'>,
         results: response.results,
         durationMs: Date.now() - started,
-        requestCount: Number(response.diagnostics?.[0]?.requestCount || 1),
-        retryCount: response.retryCount,
-        details: response.diagnostics?.[0]?.details || undefined,
+        requestCount,
+        retryCount,
+        details,
         ...(response.error ? { error: response.error } : {}),
       };
     } catch (error) {
       return {
         engine: this.name,
-        outcome: context.signal.aborted ? 'timeout' : 'transport_error',
+        outcome: context.signal.aborted ? 'cancelled' : 'transport_error',
         results: [],
         durationMs: Date.now() - started,
         requestCount: 1,
@@ -36,4 +54,9 @@ export class SearchResponseEngine implements AutoEngine {
       };
     }
   }
+}
+
+function finiteNonNegative(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
 }

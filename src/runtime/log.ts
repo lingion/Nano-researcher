@@ -6,12 +6,12 @@ function formatExtra(extra: unknown): string {
 
 export const log = {
   info(message: string, extra?: unknown) {
-    console.log('[local-policy-agent]', message, formatExtra(extra));
+    console.log('[nano-researcher]', message, formatExtra(extra));
   },
   warn(message: string, extra?: unknown) {
-    console.warn('[local-policy-agent]', message, formatExtra(extra));
+    console.warn('[nano-researcher]', message, formatExtra(extra));
   },
   error(message: string, extra?: unknown) {
-    console.error('[local-policy-agent]', message, formatExtra(extra));
+    console.error('[nano-researcher]', message, formatExtra(extra));
   },
 };

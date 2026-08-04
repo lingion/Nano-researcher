@@ -34,6 +34,10 @@ export interface FetchedPageRecord {
   title: string;
   content: string;
   backend: string;
+  statusCode?: number;
+  contentType?: string;
+  contentLength?: number;
+  truncated?: boolean;
   publishedAt?: string;
   updatedAt?: string;
   lastVerifiedAt?: string;

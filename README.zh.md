@@ -1,6 +1,6 @@
-# local-policy-agent
+# Nano-researcher
 
-一个独立的 AI 新品与访问资格雷达运行时，核心特点如下：
+一个普适的、接入 LLM 的自主研究搜索工具，核心特点如下：
 
 - 基于 NanoClaw 风格的 live radar 编排内核
 - 内置 **Auto** 多引擎搜索、Provider 诊断和有界融合排序
@@ -36,7 +36,7 @@ Generic Agent 默认路径由 `create-generic-dependencies.ts` 组装：
 
 - search: `AutoSearchProvider` 和仓库内置 Provider 注册表
 - fetch: `local-fetch-primary`，必要时回退 Playwright
-- 每次 search 最多调用 8 个引擎，首批 5 个，并受统一 deadline 限制
+- 每轮 search 最多调用 8 个引擎，在统一 deadline 内完成有界聚合
 
 vendored Search MCP worker 只保留给显式 legacy policy runtime 和兼容适配器，
 不是 `pnpm start`、Generic CLI、Generic HTTP 或 Generic MCP 的运行依赖。

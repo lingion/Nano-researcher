@@ -1,15 +1,17 @@
 <p align="center">
-  <a href="https://github.com/lingion/local-policy-agent/stargazers"><img src="https://img.shields.io/github/stars/lingion/local-policy-agent?style=for-the-badge&logo=github&color=FFD700" alt="Stars"></a>
-  <a href="https://github.com/lingion/local-policy-agent/network/members"><img src="https://img.shields.io/github/forks/lingion/local-policy-agent?style=for-the-badge&logo=github&color=8B5CF6" alt="Forks"></a>
-  <a href="https://github.com/lingion/local-policy-agent/issues"><img src="https://img.shields.io/github/issues/lingion/local-policy-agent?style=for-the-badge&logo=github&color=EF4444" alt="Issues"></a>
-  <a href="https://github.com/lingion/local-policy-agent/blob/main/LICENSE"><img src="https://img.shields.io/github/license/lingion/local-policy-agent?style=for-the-badge&logo=github&color=10B981" alt="License"></a>
+  <a href="https://github.com/lingion/Nano-researcher/stargazers"><img src="https://img.shields.io/github/stars/lingion/Nano-researcher?style=for-the-badge&logo=github&color=FFD700" alt="Stars"></a>
+  <a href="https://github.com/lingion/Nano-researcher/network/members"><img src="https://img.shields.io/github/forks/lingion/Nano-researcher?style=for-the-badge&logo=github&color=8B5CF6" alt="Forks"></a>
+  <a href="https://github.com/lingion/Nano-researcher/issues"><img src="https://img.shields.io/github/issues/lingion/Nano-researcher?style=for-the-badge&logo=github&color=EF4444" alt="Issues"></a>
+  <a href="https://github.com/lingion/Nano-researcher/blob/main/LICENSE"><img src="https://img.shields.io/github/license/lingion/Nano-researcher?style=for-the-badge&logo=github&color=10B981" alt="License"></a>
   <br>
-  <a href="https://github.com/lingion/local-policy-agent/commits/main"><img src="https://img.shields.io/github/last-commit/lingion/local-policy-agent?style=flat-square" alt="Last commit"></a>
+  <a href="https://github.com/lingion/Nano-researcher/commits/main"><img src="https://img.shields.io/github/last-commit/lingion/Nano-researcher?style=flat-square" alt="Last commit"></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Agent-purple?style=flat-square" alt="MCP"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript"></a>
 </p>
 
-Standalone AI product and access radar runtime with the following core properties:
+# Nano-researcher
+
+Standalone LLM-connected research agent with the following core properties:
 
 - NanoClaw-style live-radar orchestration core
 - built-in **Auto** multi-engine search with provider diagnostics and bounded fusion
@@ -52,7 +54,7 @@ Default backend:
 
 - search: `AutoSearchProvider` with the built-in provider registry
 - fetch: `local-fetch-primary`, with optional Playwright fallback
-- limits: at most 8 engine calls per search turn, 5 engines in the primary batch, and a bounded search deadline
+- limits: at most 8 engine calls per search turn in one bounded provider batch, with a bounded search deadline
 
 The vendored Search MCP worker is retained only for the explicit legacy policy
 runtime and compatibility adapter. It is not a dependency of `pnpm start`, the

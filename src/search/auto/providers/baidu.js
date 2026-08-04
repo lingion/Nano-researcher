@@ -4,7 +4,7 @@ import {
   fetchJson,
   fetchText
 } from "./http.js";
-import { diagnoseHtml, prepareProviderQuery, providerFailure, providerLimit, providerSuccess } from "./result.js";
+import { attemptDiagnostic, diagnoseHtml, prepareProviderQuery, providerFailure, providerLimit, providerSuccess } from "./result.js";
 import { parseBaiduGenericHtml, parseBaiduHtml, parseBaiduJson } from "./parsers.js";
 
 const BAIDU_MOBILE_URL = "https://m.baidu.com/s";
@@ -27,6 +27,7 @@ function requestOptions(context, headers) {
 export async function searchBaidu(rawQuery, context = {}) {
   const { text } = prepareProviderQuery(rawQuery);
   const limit = providerLimit(context.limit);
+  const started = Date.now();
   const mobileUrl = new URL(BAIDU_MOBILE_URL);
   mobileUrl.searchParams.set("word", text);
   mobileUrl.searchParams.set("pn", "0");
@@ -83,11 +84,13 @@ export async function searchBaidu(rawQuery, context = {}) {
   ];
 
   let last;
+  const attemptDiagnostics = [];
   for (const attempt of attempts) {
     try {
       if (attempt.type === "json") {
-        const { data, response } = await fetchJson(attempt.url, requestOptions(context, attempt.headers));
+        const { data, response, retryCount } = await fetchJson(attempt.url, requestOptions(context, attempt.headers));
         const records = parseBaiduJson(data, limit);
+        attemptDiagnostics.push(attemptDiagnostic({ url: attempt.url, response, records, retryCount }));
         last = providerSuccess({
           provider: "baidu",
           sourceFamily: "cn-web",
@@ -97,15 +100,19 @@ export async function searchBaidu(rawQuery, context = {}) {
           url: attempt.url,
           diagnostics: {
             parserVersion: "json-v1",
+            durationMs: Date.now() - started,
             parseFailures: records.length === 0 ? 1 : 0,
-            markupFound: true
+            markupFound: true,
+            requestCount: attemptDiagnostics.length,
+            retryCount,
+            attempts: attemptDiagnostics
           }
         });
         if (records.length) return last;
         continue;
       }
 
-      const { text: html, response } = await fetchText(attempt.url, requestOptions(context, attempt.headers));
+      const { text: html, response, retryCount } = await fetchText(attempt.url, requestOptions(context, attempt.headers));
       let records = parseBaiduHtml(html, limit);
       if (!records.length) records = parseBaiduGenericHtml(html, limit);
       const diagnostics = diagnoseHtml({
@@ -114,6 +121,7 @@ export async function searchBaidu(rawQuery, context = {}) {
         responseUrl: response.url || attempt.url,
         recordCount: records.length
       });
+      attemptDiagnostics.push(attemptDiagnostic({ url: attempt.url, response, records, diagnostics, retryCount }));
       last = providerSuccess({
         provider: "baidu",
         sourceFamily: "cn-web",
@@ -121,17 +129,25 @@ export async function searchBaidu(rawQuery, context = {}) {
         records,
         response,
         url: attempt.url,
-        diagnostics
+        diagnostics: {
+          ...diagnostics,
+          durationMs: Date.now() - started,
+          requestCount: attemptDiagnostics.length,
+          retryCount,
+          attempts: attemptDiagnostics
+        }
       });
       if (records.length) return last;
     } catch (error) {
-      last = providerFailure({ provider: "baidu", url: attempt.url, error });
+      attemptDiagnostics.push(attemptDiagnostic({ url: attempt.url, error }));
+      last = providerFailure({ provider: "baidu", url: attempt.url, error, diagnostics: { durationMs: Date.now() - started, requestCount: attemptDiagnostics.length, attempts: attemptDiagnostics } });
     }
   }
 
   return last || providerFailure({
     provider: "baidu",
     url: mobileUrl.toString(),
-    error: new Error("Baidu returned no usable response")
+    error: new Error("Baidu returned no usable response"),
+    diagnostics: { durationMs: Date.now() - started }
   });
 }

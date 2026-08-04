@@ -1,11 +1,11 @@
 # Production Ready Handoff
 
 Generated: 2026-06-05
-Project: `local-policy-agent`
+Project: `Nano-researcher` (legacy repository slug: `local-policy-agent`)
 
 ## 1. Final Repository State
 
-`local-policy-agent` has been converted from an ad hoc project directory into a portable engineering delivery artifact with:
+`Nano-researcher` has been converted from an ad hoc project directory into a portable engineering delivery artifact with:
 
 - production baseline committed to git
 - explicit runtime environment documentation

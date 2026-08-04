@@ -13,6 +13,7 @@ const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
 function createFakeBrowser(options: {
   goto?: () => Promise<void>;
   innerText?: () => Promise<string>;
+  content?: () => Promise<string>;
   onContextOpen?: () => void;
   onContextClose?: () => void;
   routeUrls?: string[];
@@ -48,6 +49,7 @@ function createFakeBrowser(options: {
             url: () => 'https://example.cn/rendered',
             locator: () => ({ innerText: options.innerText ?? (async () => 'rendered body') }),
             title: async () => 'rendered title',
+            ...(options.content ? { content: options.content } : {}),
           };
         },
         async close() {
@@ -94,6 +96,27 @@ test('browser fetch extracts rendered beta page metadata', async () => {
   assert.equal(result.pageRenderMode, 'playwright');
   assert.equal(result.publishedAt, '2026-07-20');
   assert.deepEqual(result.accessSignals, ['gray_release', 'waitlist', 'invite_only']);
+});
+
+test('browser fallback preserves static transport metadata and does not capture unused HTML', async () => {
+  let contentCalls = 0;
+  const browser = createFakeBrowser({ innerText: async () => 'rendered body '.repeat(40), content: async () => { contentCalls += 1; return '<html>unused</html>'; } });
+  const adapter = createPlaywrightBrowserAdapter({ launch: async () => browser, networkLookup: publicLookup, managerKey: 'transport-metadata' });
+  const result = await fetchWithBrowserFallback('https://example.cn/beta', {
+    staticFetch: async () => ({
+      title: 'App', content: 'enable javascript', finalUrl: 'https://example.cn/beta', statusCode: 200,
+      contentType: 'text/html; charset=utf-8', contentLength: 1234, truncated: true, extractionWarnings: ['static warning'],
+    }),
+    browser: adapter,
+    now: '2026-07-24T00:00:00.000Z',
+  });
+  assert.equal(contentCalls, 0);
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.contentType, 'text/html; charset=utf-8');
+  assert.equal(result.contentLength, 1234);
+  assert.equal(result.truncated, true);
+  assert.deepEqual(result.extractionWarnings, ['static warning']);
+  await adapter.close();
 });
 
 test('playwright blocks unsafe literal and DNS-resolved subresources before route continuation', async () => {
