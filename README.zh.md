@@ -3,8 +3,9 @@
 一个独立的 AI 新品与访问资格雷达运行时，核心特点如下：
 
 - 基于 NanoClaw 风格的 live radar 编排内核
-- 默认 **MCP-first / MCP-only** 搜索与抓取后端
-- 由 prompt 驱动的新品、发布、内测、Waitlist 和资格证据判断
+- 内置 **Auto** 多引擎搜索、Provider 诊断和有界融合排序
+- 本地静态抓取，并支持 Playwright 渲染回退
+- 由 prompt 驱动、领域无关的证据判断和最终报告
 - 最终以 `summarize_and_stop` 结束，而不是无限搜索
 
 英文文档见：
@@ -14,14 +15,14 @@
 
 ## 1. 项目用途
 
-这个仓库运行一个 AI 产品与访问资格雷达循环：
+这个仓库默认运行一个领域无关的自主研究循环：
 
-1. 模型先决定当前应该 search、fetch、review 还是 summarize
-2. search 只负责发现产品页、公告、文档、开发者页面和申请入口
+1. 模型先决定当前应该 search、fetch、review 还是 finish
+2. Auto 通过仓库内注册的 Provider 发现候选 URL
 3. fetch 只负责抓取页面正文证据
-4. 抓取后的证据会被分类为：`GOLD_STANDARD` / `SILVER_STANDARD` / `NOISE`
-5. 模型区分产品是否存在与当前用户是否有资格访问
-6. 最终结果区分正式发布、公测、内测、Preview、Waitlist、邀请码、地区限制和申请路径
+4. 模型把 finding 分类为 `confirmed`、`uncertain` 或 `excluded`，并绑定已抓取证据
+5. runtime 校验工具协议、执行用户预算、持久化证据并记录传输事实
+6. 最终输出 JSON 或 Markdown，包含答案、finding、引用、不确定性和中断状态
 
 ---
 
@@ -29,95 +30,76 @@
 
 ### 2.1 搜索与抓取层
 
-当前默认 owned runtime 路径已经固定为 **vendored Search MCP worker**。
-主执行流里已经**没有 legacy Cloudflare 风格默认搜索路径**。
+Generic Agent 默认路径由 `create-generic-dependencies.ts` 组装：
 
 默认后端：
 
-- search: `search-mcp`
-- fetch: `search-mcp:fetch_url`
+- search: `AutoSearchProvider` 和仓库内置 Provider 注册表
+- fetch: `local-fetch-primary`，必要时回退 Playwright
+- 每次 search 最多调用 8 个引擎，首批 5 个，并受统一 deadline 限制
+
+vendored Search MCP worker 只保留给显式 legacy policy runtime 和兼容适配器，
+不是 `pnpm start`、Generic CLI、Generic HTTP 或 Generic MCP 的运行依赖。
 
 关键文件：
 
-- `src/app/run-policy-task.ts`
-- `src/app/run-live-audit.ts`
-- `src/runtime/search-mcp-tool-adapter.ts`
-- `vendor/search-mcp/src/stdio-server.js`
+- `src/app/create-generic-dependencies.ts`
+- `src/search/auto/`
+- `src/fetch/service.ts`
+- `src/fetch-fusion/local-fetch-primary.ts`
+- `src/fetch-fusion/browser-fetch.ts`
 
 ### 2.2 判断与收敛层
 
-业务判断尽量留在模型契约里，而不是硬编码进 runtime 规则。
+业务判断留在 Generic Agent 契约里，而不是硬编码进 runtime 规则。
 
 模型必须负责：
 
-- 决定什么时候 search，什么时候 fetch
-- 对抓取结果做证据分类
-- 避免 fetch 后直接 premature finalize
-- 只在最终 summary 阶段产出完整总结
+- 决定何时 search、fetch、review 或 finish
+- 决定候选是否相关，以及证据如何支撑结论
+- 产出最终答案和 finding disposition
+
+系统只负责协议校验、取消、有界执行、证据持久化、Provider 诊断和报告渲染，
+不根据领域语义自动编造 query、选择候选或替换模型决定。
 
 关键文件：
 
-- `src/policy-task/prompt-builder.ts`
-- `src/runtime/ask-real-claude.ts`
-- `src/runtime/local-session-loop.ts`
-- `src/runtime/termination-policy.ts`
+- `src/agent/agent-loop.ts`
+- `src/agent/decision-protocol.ts`
+- `src/agent/action-executor.ts`
+- `src/artifacts/generic-report.ts`
 
 ---
 
 ## 3. Prompt 契约重点
 
-当前 prompt contract 明确约束了输入、输出和抓取节奏。
+Generic 使用原生 tool-call 协议。模型每次返回一个经过严格校验的决定，
+runtime 不把自由文本 JSON 当成未经验证的命令通道。
 
 ### 3.1 输入状态
 
-模型应只依赖这些输入字段：
+用户可配置这些任务选项：
 
-- `task`
-- `currentIteration`
-- `discoveredCandidates`
-- `fetchedEvidence`
-- `uncertainties`
-- `convergencePhase`
-- `targetValidatedEvidenceCount`
+- `maxIterations`：1 到 100
+- `completionMode`：`target_results` 或 `rounds`
+- `targetResultCount`：目标模式下为 1 到 100
+- `evidenceRequired` 和 `minFetchedPages`
+- `maxSearchActionsPerTurn` 和 `maxFetchActionsPerTurn`：各为 1 到 8
+- `locale` 和 `outputFormat`
 
-这意味着 summary 阶段和验证阈值本身也是 prompt contract 的一部分，不再是“隐藏上下文”。
+`target_results` 统计去重后的 Agent confirmed findings；`rounds` 执行用户要求的
+有界研究轮次，再单独发起 finish。search discovery 不会被冒充为 fetched evidence。
 
 ### 3.2 fetchActions 规则
 
-`continue_fetch` 的输出必须满足：
+每一个模型决定都必须满足共享协议：
 
-- `fetchActions` 不能为空
-- 如果 `discoveredCandidates` 里已经有官方 URL，必须原样拷贝进 `fetchActions`
-- 单轮通常只允许 **1–2 个 fetchActions**
-- 只有 prompt 明确进入强制多抓取场景时，才允许超过 2 个
+- `search` 只能带 search actions，`fetch` 只能带 fetch actions
+- 单次决定不能超过调用方设置的 action budget
+- `finish` 必须带最终答案和绑定证据的 findings
+- malformed 或 Provider-invalid 响应会记录为协议错误，只做有界恢复
 
-这个限制是为了防止一轮里抓太多页面，把上下文和证据判断搞乱。
-
-### 3.3 最终有效证据目标个数
-
-最重要的最终阈值参数是：
-
-- `POLICY_TARGET_VALIDATED_COUNT`
-
-它表示：
-
-> **在进入收敛前，至少要攒够多少条有效抓取证据。**
-
-只有被分类成下面两类的抓取结果才计数：
-
-- `GOLD_STANDARD`
-- `SILVER_STANDARD`
-
-`NOISE` 不计数。
-
-默认行为：
-
-- 默认阈值：`3`
-- 可通过 runtime option 覆盖：`targetValidatedEvidenceCount`
-- 可通过环境变量覆盖：`POLICY_TARGET_VALIDATED_COUNT`
-
-注意：
-这代表的是 **有效证据个数**，不是原始抓取页数。
+这些限制只负责防止无限 fan-out，不替模型决定研究顺序和语义选择。
 
 ---
 
@@ -125,8 +107,8 @@
 
 已验证运行版本：
 
-- Node.js `v22.21.0`
-- pnpm `10.33.0`
+- Node.js `v22.22.3` 或兼容的 Node 22
+- pnpm `10.32.1` 或兼容的 pnpm 10+
 
 如果你使用 `nvm`：
 
@@ -154,60 +136,69 @@ pnpm build
 cp .env.example .env
 ```
 
-live audit 必填变量：
+Generic live CLI 必填变量：
 
-- `LIVE_AUDIT_TOPIC`
-- `LIVE_AUDIT_MAX_ITERATIONS`
-- `NANOCLAW_LLM_PROVIDER=openai`
+- `RESEARCH_QUESTION`
 - `NANOCLAW_BASE_URL`
 - `NANOCLAW_API_KEY`
 
-可选 live-audit 变量：
+可选 Generic 变量：
 
-- `LIVE_AUDIT_OUTPUT_DIR`
-- `LIVE_AUDIT_DEBUG`
-- `LIVE_AUDIT_DIAG`
-- `POLICY_TARGET_VALIDATED_COUNT`
+- `RESEARCH_COMPLETION_MODE`
+- `RESEARCH_MAX_ITERATIONS`
+- `RESEARCH_TARGET_RESULTS`
+- `RESEARCH_EVIDENCE_REQUIRED`
+- `RESEARCH_MIN_FETCHED_PAGES`
+- `RESEARCH_MAX_SEARCH_ACTIONS`
+- `RESEARCH_MAX_FETCH_ACTIONS`
+- `RESEARCH_OUTPUT_FORMAT`
+- `RESEARCH_RUN_TIMEOUT_MS`
 
 可选模型覆盖：
 
 - `NANOCLAW_MODEL=gpt-5.4`
 - `POLICY_AGENT_LLM_MODEL=gpt-5.4`
 
-可选 Search MCP 覆盖：
+Legacy policy runtime 变量：
 
+- `LIVE_AUDIT_TOPIC`
+- `LIVE_AUDIT_MAX_ITERATIONS`
+- `POLICY_TARGET_VALIDATED_COUNT`
 - `SEARCH_MCP_WORKER_PATH`
 
 说明：
 
 - live run 需要一个 OpenAI-compatible 的 NanoClaw gateway
-- Search MCP worker 已 vendored 到仓库内，并且默认使用
-- 一般情况下不需要再切换搜索后端开关
+- Generic 主链不依赖 Search MCP
+- `pnpm legacy-audit` 只为旧 policy runtime 保留兼容入口
 
 ---
 
 ## 7. 运行时参数总表
 
-### 7.1 live-audit 环境参数
+### 7.1 Generic 环境参数
 
-- `LIVE_AUDIT_TOPIC` — live audit 主题
-- `LIVE_AUDIT_MAX_ITERATIONS` — 最大轮数，必须是正整数
-- `LIVE_AUDIT_OUTPUT_DIR` — 可选输出目录
-- `LIVE_AUDIT_DEBUG` — 可选详细调试模式
-- `LIVE_AUDIT_DIAG` — 可选诊断模式
-- `POLICY_TARGET_VALIDATED_COUNT` — 收敛前要求的有效证据目标个数
+- `RESEARCH_QUESTION` — 研究问题
+- `RESEARCH_COMPLETION_MODE` — `target_results` 或 `rounds`
+- `RESEARCH_MAX_ITERATIONS` — 1 到 100
+- `RESEARCH_TARGET_RESULTS` — 目标 confirmed findings，1 到 100
+- `RESEARCH_EVIDENCE_REQUIRED` — 是否要求 finding 引用 fetched page
+- `RESEARCH_MIN_FETCHED_PAGES` — 要求证据时的最少抓取页数
+- `RESEARCH_MAX_SEARCH_ACTIONS` 和 `RESEARCH_MAX_FETCH_ACTIONS` — 每轮 1 到 8
 
-### 7.2 `runPolicyTaskLoop(...)` options
+### 7.2 `ResearchTask.options`
 
 - `maxIterations?: number`
-- `askAgent?: (state) => Promise<PolicyAgentDecision>`
-- `callModel?: (prompt: string) => Promise<string>`
-- `searchTool?: SearchTool`
-- `fetchTool?: FetchTool`
-- `onDebugEvent?: (event: DebugEvent) => void`
-- `targetValidatedEvidenceCount?: number`
+- `completionMode?: 'target_results' | 'rounds'`
+- `targetResultCount?: number`
+- `evidenceRequired?: boolean`
+- `minFetchedPages?: number`
+- `maxSearchActionsPerTurn?: number`
+- `maxFetchActionsPerTurn?: number`
+- `locale?: string`
+- `outputFormat?: 'json' | 'markdown'`
 
-### 7.3 `SearchMcpToolOptions`
+### 7.3 Legacy `SearchMcpToolOptions`
 
 - `command?: string`
 - `args?: string[]`
@@ -218,7 +209,7 @@ live audit 必填变量：
 - `fetchMaxChars?: number`
 - `engines?: string[]`
 
-默认值：
+Legacy 默认值：
 
 - `command = node`
 - `args = [vendor/search-mcp/src/stdio-server.js]`
@@ -226,22 +217,11 @@ live audit 必填变量：
 - `fetchMaxChars = 20000`
 - `engines = ['bing_cn', 'baidu', '360', 'sogou', 'bing']`
 
-### 7.4 下游 MCP tool 调用参数
+### 7.4 Generic 外部适配器
 
-Search adapter 调用：
-
-- tool: `search_auto`
-- args:
-  - `query`
-  - `limit`
-  - `engines`
-
-Fetch adapter 调用：
-
-- tool: `fetch_url`
-- args:
-  - `url`
-  - `maxChars`
+- HTTP：`pnpm generic-http`，提供 `/v1/research` 和 `/monitor`
+- MCP：`pnpm generic-mcp`，默认只暴露统一 `research` 工具
+- CLI：`pnpm generic-agent` 或 `pnpm start`
 
 ---
 
@@ -265,43 +245,45 @@ pnpm test
 pnpm test:fixture
 ```
 
-### 8.4 Live audit
+### 8.4 Generic CLI
 
 ```bash
-pnpm live-audit
+pnpm start
 ```
 
 示例：
 
 ```bash
-LIVE_AUDIT_TOPIC='最新 AI 模型、Agent、API、Beta/Preview、Waitlist 和内测资格' \
-LIVE_AUDIT_MAX_ITERATIONS=10 \
-POLICY_TARGET_VALIDATED_COUNT=4 \
-LIVE_AUDIT_DEBUG=1 \
-pnpm live-audit
+RESEARCH_QUESTION='查找当前可公开申请的 AI 开发者工具 Beta 或 Waitlist' \
+RESEARCH_COMPLETION_MODE=target_results \
+RESEARCH_TARGET_RESULTS=10 \
+RESEARCH_MAX_ITERATIONS=100 \
+pnpm start
 ```
 
 ---
 
 ## 9. 当前执行保证
 
-当前 runtime 行为是刻意收紧过的：
+Generic runtime 的边界是明确且有上限的：
 
-- 默认 owned search 路径是 MCP-only
-- 抓取证据在有效 summary 结束前必须完成分类
-- `post_convergence_review` 不会再被 premature `finalize` 直接截断
-- loop 可以进入 `final_summary` 并以 `summarize_and_stop` 结束
+- 默认搜索路径是 Auto，全部 Provider 在本仓库注册
+- search、ranking 和最终输出分层处理
+- Agent 决定 search/fetch/review/finish，系统只执行和验证
+- target 按规范化 finding/证据统计，不按原始 snippet 凑数
+- 每个 run 最多 100 轮，每轮 action 数也有硬上限
 
 ---
 
 ## 10. 仓库内重点文件
 
-- `src/app/run-live-audit.ts` — live audit 入口
-- `src/app/run-policy-task.ts` — 外层循环控制器
-- `src/runtime/local-session-loop.ts` — 单轮执行逻辑
-- `src/runtime/search-mcp-tool-adapter.ts` — MCP 搜索/抓取桥接层
-- `src/policy-task/prompt-builder.ts` — 模型契约定义
-- `vendor/search-mcp/` — vendored MCP worker
+- `src/app/run-generic-agent.ts` — Generic CLI 入口
+- `src/agent/agent-loop.ts` — 模型自主研究循环
+- `src/search/auto/` — Auto Provider 注册和有界融合
+- `src/fetch/` 与 `src/fetch-fusion/` — 抓取 Provider 和浏览器回退
+- `src/adapters/http/` 与 `src/adapters/mcp/` — 统一外部接口
+- `src/artifacts/generic-report.ts` — JSON/Markdown/HTML 报告
+- `src/legacy/` 与 `vendor/search-mcp/` — 显式兼容路径
 
 ---
 
@@ -309,13 +291,9 @@ pnpm live-audit
 
 近期已经验证通过的关键点：
 
-- MCP-only 默认 backend 路径已有回归测试覆盖
-- convergence 回归测试覆盖：
-  - `post_convergence_review`
-  - `final_summary`
-  - `summarize_and_stop`
-- 最新 AI 新品与访问资格 live audit 已能走到 `summarize_and_stop`，并输出发布和资格证据
-- 不再卡在 premature `finalize`
+- Generic Agent、Auto、Provider、fetch、evidence、report、HTTP、MCP 和 monitor 均由完整测试命令覆盖
+- policy 与 generic 两套 TypeScript 项目都由 `pnpm build` 编译
+- 真实 Provider/LLM 运行受环境影响，必须与离线测试状态分开报告
 
 ---
 
@@ -325,10 +303,10 @@ pnpm live-audit
 
 - 把政策业务结论硬编码进 runtime
 - 把 search snippet 当成最终证据
-- 为了兼容继续保留 legacy 默认搜索行为
+- 把 policy 领域规则重新放进 Generic Agent
 
 当前方向是：
 
-- 更强的 MCP 搜索/抓取质量
-- 更清晰的 prompt contract
+- 更广的 Auto Provider 覆盖
+- 更清晰的模型/系统责任边界
 - 更可靠的证据驱动 summary 输出

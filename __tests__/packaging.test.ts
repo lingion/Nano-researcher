@@ -13,7 +13,7 @@ test('package includes zero-config portability metadata', () => {
   assert.match(readFileSync(new URL('../.nvmrc', import.meta.url), 'utf8').trim(), /^v22\.21\.0$/);
   const envExample = readFileSync(new URL('../.env.example', import.meta.url), 'utf8');
 
-  assert.match(envExample, /NANOCLAW_LLM_PROVIDER=openai/);
+  assert.match(envExample, /RESEARCH_QUESTION=/);
   assert.match(envExample, /NANOCLAW_BASE_URL=/);
   assert.match(envExample, /NANOCLAW_API_KEY=/);
 });

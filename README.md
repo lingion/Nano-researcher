@@ -1,10 +1,20 @@
-# local-policy-agent
+<p align="center">
+  <a href="https://github.com/lingion/local-policy-agent/stargazers"><img src="https://img.shields.io/github/stars/lingion/local-policy-agent?style=for-the-badge&logo=github&color=FFD700" alt="Stars"></a>
+  <a href="https://github.com/lingion/local-policy-agent/network/members"><img src="https://img.shields.io/github/forks/lingion/local-policy-agent?style=for-the-badge&logo=github&color=8B5CF6" alt="Forks"></a>
+  <a href="https://github.com/lingion/local-policy-agent/issues"><img src="https://img.shields.io/github/issues/lingion/local-policy-agent?style=for-the-badge&logo=github&color=EF4444" alt="Issues"></a>
+  <a href="https://github.com/lingion/local-policy-agent/blob/main/LICENSE"><img src="https://img.shields.io/github/license/lingion/local-policy-agent?style=for-the-badge&logo=github&color=10B981" alt="License"></a>
+  <br>
+  <a href="https://github.com/lingion/local-policy-agent/commits/main"><img src="https://img.shields.io/github/last-commit/lingion/local-policy-agent?style=flat-square" alt="Last commit"></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Agent-purple?style=flat-square" alt="MCP"></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript"></a>
+</p>
 
 Standalone AI product and access radar runtime with the following core properties:
 
 - NanoClaw-style live-radar orchestration core
-- default **MCP-first / MCP-only** search and fetch backend
-- prompt-driven product, release, access, waitlist, and eligibility evidence judgment
+- built-in **Auto** multi-engine search with provider diagnostics and bounded fusion
+- local static fetch with optional Playwright rendering fallback
+- prompt-driven, domain-neutral evidence judgment and final reporting
 - final termination via `summarize_and_stop`, not endless search loops
 
 See the Chinese documentation here:
@@ -21,14 +31,14 @@ returns source-backed results through the direct CLI, HTTP, or MCP host.
 The previous policy and early-access runtime remains available as the explicit
 `legacy-audit` compatibility command during migration.
 
-This repository runs an AI product and access radar loop:
+This repository runs a domain-neutral autonomous research loop:
 
-1. the model decides whether the next step should be search, fetch, review, or summarize
-2. search discovers candidate product, announcement, documentation, or application URLs only
+1. the model decides whether the next step should be search, fetch, review, or finish
+2. Auto search discovers candidate URLs through the registered provider set
 3. fetch retrieves page evidence only
-4. fetched evidence is classified as `GOLD_STANDARD`, `SILVER_STANDARD`, or `NOISE`
-5. the model separates product existence from current access eligibility
-6. the final output distinguishes release, beta, preview, waitlist, invitation, region limits, and application paths
+4. the model classifies findings as `confirmed`, `uncertain`, or `excluded` and binds them to fetched evidence
+5. the runtime validates tool calls, enforces user-selected budgets, persists evidence, and reports transport facts
+6. the final output is JSON or Markdown with an answer, findings, citations, uncertainties, and interruption state
 
 ---
 
@@ -36,92 +46,82 @@ This repository runs an AI product and access radar loop:
 
 ### 2.1 Search and fetch layer
 
-The default owned runtime path is hard-wired to the vendored Search MCP worker.
-There is no legacy Cloudflare-style default search path left in the main execution flow.
+The default Generic Agent path is assembled in `create-generic-dependencies.ts`:
 
 Default backend:
 
-- search: `search-mcp`
-- fetch: `search-mcp:fetch_url`
+- search: `AutoSearchProvider` with the built-in provider registry
+- fetch: `local-fetch-primary`, with optional Playwright fallback
+- limits: at most 8 engine calls per search turn, 5 engines in the primary batch, and a bounded search deadline
+
+The vendored Search MCP worker is retained only for the explicit legacy policy
+runtime and compatibility adapter. It is not a dependency of `pnpm start`, the
+Generic CLI, the Generic HTTP adapter, or the Generic MCP adapter.
 
 Relevant files:
 
-- `src/app/run-policy-task.ts`
-- `src/app/run-live-audit.ts`
-- `src/runtime/search-mcp-tool-adapter.ts`
-- `vendor/search-mcp/src/stdio-server.js`
+- `src/app/create-generic-dependencies.ts`
+- `src/search/auto/`
+- `src/fetch/service.ts`
+- `src/fetch-fusion/local-fetch-primary.ts`
+- `src/fetch-fusion/browser-fetch.ts`
 
 ### 2.2 Judgment and convergence layer
 
-Business judgment is intentionally kept in the model contract rather than hard-coded runtime rules.
+Business judgment is intentionally kept in the Generic Agent contract rather than hard-coded runtime rules.
 
 The model is responsible for:
 
-- deciding when to search vs fetch
-- classifying fetched evidence
-- avoiding premature finalize right after fetch
-- producing the final summary package only in the summary phase
+- deciding when to search, fetch, review, or finish
+- deciding which candidate is relevant and how evidence supports it
+- producing the final answer and finding dispositions
+
+The system is responsible for protocol validation, cancellation, bounded
+execution, evidence persistence, provider diagnostics, and report rendering.
+It does not invent search queries, select candidates by domain meaning, or
+replace a model decision with a hidden business rule.
 
 Relevant files:
 
-- `src/policy-task/prompt-builder.ts`
-- `src/runtime/ask-real-claude.ts`
-- `src/runtime/local-session-loop.ts`
-- `src/runtime/termination-policy.ts`
+- `src/agent/agent-loop.ts`
+- `src/agent/decision-protocol.ts`
+- `src/agent/action-executor.ts`
+- `src/artifacts/generic-report.ts`
 
 ---
 
 ## 3. Prompt contract highlights
 
-The current prompt contract explicitly constrains inputs, outputs, and fetch cadence.
+The Generic contract is a native tool-call protocol. The model returns one
+validated decision at a time; the runtime never treats free-form text as an
+unvalidated command channel.
 
 ### 3.1 Input state
 
-The model should rely only on these input fields:
+The task accepts these user-controlled options:
 
-- `task`
-- `currentIteration`
-- `discoveredCandidates`
-- `fetchedEvidence`
-- `uncertainties`
-- `convergencePhase`
-- `targetValidatedEvidenceCount`
+- `maxIterations` — 1 to 100
+- `completionMode` — `target_results` or `rounds`
+- `targetResultCount` — 1 to 100 when target mode is used
+- `evidenceRequired` and `minFetchedPages`
+- `maxSearchActionsPerTurn` and `maxFetchActionsPerTurn` — each 1 to 8
+- `locale` and `outputFormat`
 
-This means the summary phase and validated-evidence threshold are part of the visible prompt contract, not hidden runtime context.
+`target_results` counts unique agent-confirmed findings; `rounds` executes the
+requested bounded number of research rounds before a separate finish request.
+Search discovery alone is never treated as fetched evidence.
 
 ### 3.2 fetchActions rules
 
-A `continue_fetch` output must satisfy all of the following:
+Every model decision must satisfy the shared protocol:
 
-- `fetchActions` must not be empty
-- if `discoveredCandidates` already contains official URLs, they must be copied into `fetchActions` verbatim
-- a round normally allows only **1–2 fetchActions**
-- more than 2 is only allowed when the prompt explicitly enters a forced multi-fetch transition
+- `search` carries search actions only; `fetch` carries fetch actions only
+- one decision cannot exceed the caller's action budget
+- `finish` carries the final answer and evidence-bound findings
+- malformed or provider-invalid responses are recorded as protocol failures and recovered only within a bounded retry budget
 
-This limit exists to prevent over-fetching in one round and degrading context quality and evidence judgment.
-
-### 3.3 Final validated evidence target
-
-The most important end-state threshold is:
-
-- `POLICY_TARGET_VALIDATED_COUNT`
-
-This is the required count of validated fetched evidence items before convergence begins.
-Only evidence classified as:
-
-- `GOLD_STANDARD`
-- `SILVER_STANDARD`
-
-counts toward this threshold.
-`NOISE` does not count.
-
-Default behavior:
-
-- default threshold: `3`
-- override via runtime option: `targetValidatedEvidenceCount`
-- override via environment variable: `POLICY_TARGET_VALIDATED_COUNT`
-
-This is a validated evidence target, not a raw fetch count.
+The limits prevent unbounded action fan-out while leaving the model in charge
+of research order and semantic selection.
 
 ---
 
@@ -129,8 +129,8 @@ This is a validated evidence target, not a raw fetch count.
 
 Validated runtime versions:
 
-- Node.js `v22.21.0`
-- pnpm `10.33.0`
+- Node.js `v22.22.3` or compatible Node 22
+- pnpm `10.32.1` or compatible pnpm 10+
 
 If you use `nvm`:
 
@@ -158,28 +158,34 @@ Copy the example file first:
 cp .env.example .env
 ```
 
-Required variables for live audit:
+Required variables for the Generic live CLI:
 
-- `LIVE_AUDIT_TOPIC`
-- `LIVE_AUDIT_MAX_ITERATIONS`
-- `NANOCLAW_LLM_PROVIDER=openai`
+- `RESEARCH_QUESTION`
 - `NANOCLAW_BASE_URL`
 - `NANOCLAW_API_KEY`
 
 Optional live-audit variables:
 
-- `LIVE_AUDIT_OUTPUT_DIR`
-- `LIVE_AUDIT_DEBUG`
-- `LIVE_AUDIT_DIAG`
-- `POLICY_TARGET_VALIDATED_COUNT`
+- `RESEARCH_COMPLETION_MODE`
+- `RESEARCH_MAX_ITERATIONS`
+- `RESEARCH_TARGET_RESULTS`
+- `RESEARCH_EVIDENCE_REQUIRED`
+- `RESEARCH_MIN_FETCHED_PAGES`
+- `RESEARCH_MAX_SEARCH_ACTIONS`
+- `RESEARCH_MAX_FETCH_ACTIONS`
+- `RESEARCH_OUTPUT_FORMAT`
+- `RESEARCH_RUN_TIMEOUT_MS`
 
 Optional model overrides:
 
 - `NANOCLAW_MODEL=gpt-5.4`
 - `POLICY_AGENT_LLM_MODEL=gpt-5.4`
 
-Optional Search MCP override:
+Legacy policy runtime variables:
 
+- `LIVE_AUDIT_TOPIC`
+- `LIVE_AUDIT_MAX_ITERATIONS`
+- `POLICY_TARGET_VALIDATED_COUNT`
 - `SEARCH_MCP_WORKER_PATH`
 
 Notes:
@@ -187,33 +193,36 @@ Notes:
 - live runs require an OpenAI-compatible NanoClaw gateway
 - `NANOCLAW_API_KEY` must be injected by the external runtime environment; never commit or copy a live credential into source, tests, reports, or logs
 - local `.env.*` files are ignored and are only a developer convenience for manual runs
-- the Search MCP worker is vendored inside the repo and used by default
-- in normal usage, you do not need to switch search backend flags
+- the Generic path does not require Search MCP
+- `pnpm legacy-audit` is retained for compatibility with the older policy runtime
 
 ---
 
 ## 7. Runtime argument tables
 
-### 7.1 Live-audit environment arguments
+### 7.1 Generic environment arguments
 
-- `LIVE_AUDIT_TOPIC` — live audit topic
-- `LIVE_AUDIT_MAX_ITERATIONS` — maximum loop count, must be a positive integer
-- `LIVE_AUDIT_OUTPUT_DIR` — optional output directory
-- `LIVE_AUDIT_DEBUG` — optional verbose debug mode
-- `LIVE_AUDIT_DIAG` — optional diagnostics mode
-- `POLICY_TARGET_VALIDATED_COUNT` — required validated evidence target before convergence
+- `RESEARCH_QUESTION` — research question
+- `RESEARCH_COMPLETION_MODE` — `target_results` or `rounds`
+- `RESEARCH_MAX_ITERATIONS` — 1 to 100
+- `RESEARCH_TARGET_RESULTS` — target confirmed findings, 1 to 100
+- `RESEARCH_EVIDENCE_REQUIRED` — whether findings must cite fetched pages
+- `RESEARCH_MIN_FETCHED_PAGES` — minimum fetched pages when evidence is required
+- `RESEARCH_MAX_SEARCH_ACTIONS` and `RESEARCH_MAX_FETCH_ACTIONS` — 1 to 8 per turn
 
-### 7.2 `runPolicyTaskLoop(...)` options
+### 7.2 `ResearchTask.options`
 
 - `maxIterations?: number`
-- `askAgent?: (state) => Promise<PolicyAgentDecision>`
-- `callModel?: (prompt: string) => Promise<string>`
-- `searchTool?: SearchTool`
-- `fetchTool?: FetchTool`
-- `onDebugEvent?: (event: DebugEvent) => void`
-- `targetValidatedEvidenceCount?: number`
+- `completionMode?: 'target_results' | 'rounds'`
+- `targetResultCount?: number`
+- `evidenceRequired?: boolean`
+- `minFetchedPages?: number`
+- `maxSearchActionsPerTurn?: number`
+- `maxFetchActionsPerTurn?: number`
+- `locale?: string`
+- `outputFormat?: 'json' | 'markdown'`
 
-### 7.3 `SearchMcpToolOptions`
+### 7.3 Legacy `SearchMcpToolOptions`
 
 - `command?: string`
 - `args?: string[]`
@@ -224,7 +233,7 @@ Notes:
 - `fetchMaxChars?: number`
 - `engines?: string[]`
 
-Defaults:
+Legacy defaults:
 
 - `command = node`
 - `args = [vendor/search-mcp/src/stdio-server.js]`
@@ -232,22 +241,11 @@ Defaults:
 - `fetchMaxChars = 20000`
 - `engines = ['bing_cn', 'baidu', '360', 'sogou', 'bing']`
 
-### 7.4 Downstream MCP tool call arguments
+### 7.4 Generic adapters
 
-Search adapter calls:
-
-- tool: `search_auto`
-- args:
-  - `query`
-  - `limit`
-  - `engines`
-
-Fetch adapter calls:
-
-- tool: `fetch_url`
-- args:
-  - `url`
-  - `maxChars`
+- HTTP: `pnpm generic-http`, with `/v1/research` and `/monitor`
+- MCP: `pnpm generic-mcp`, exposing the unified `research` tool
+- CLI: `pnpm generic-agent` or `pnpm start`
 
 ---
 
@@ -271,43 +269,45 @@ pnpm test
 pnpm test:fixture
 ```
 
-### 8.4 Live audit
+### 8.4 Generic CLI
 
 ```bash
-pnpm live-audit
+pnpm start
 ```
 
 Example:
 
 ```bash
-LIVE_AUDIT_TOPIC='最新 AI 模型、Agent、API、Beta/Preview、Waitlist 和内测资格' \
-LIVE_AUDIT_MAX_ITERATIONS=10 \
-POLICY_TARGET_VALIDATED_COUNT=4 \
-LIVE_AUDIT_DEBUG=1 \
-pnpm live-audit
+RESEARCH_QUESTION='Find current public beta or waitlist access for AI developer tools' \
+RESEARCH_COMPLETION_MODE=target_results \
+RESEARCH_TARGET_RESULTS=10 \
+RESEARCH_MAX_ITERATIONS=100 \
+pnpm start
 ```
 
 ---
 
 ## 9. Current execution guarantees
 
-The current runtime behavior is intentionally stricter than before:
+The Generic runtime behavior is intentionally bounded and explicit:
 
-- the default owned search path is MCP-only
-- fetched evidence must be classified before valid summary termination
-- `post_convergence_review` can no longer be prematurely terminated by `finalize`
-- the loop can advance into `final_summary` and terminate with `summarize_and_stop`
+- the default search path is Auto and all providers are registered in this repository
+- search, ranking, and final output are separate layers
+- the Agent chooses search/fetch/review/finish; the system executes and verifies
+- targets are counted from canonical findings/evidence, not raw search snippets
+- every run has a hard maximum of 100 iterations and per-turn action budgets
 
 ---
 
 ## 10. Important files
 
-- `src/app/run-live-audit.ts` — live audit entrypoint
-- `src/app/run-policy-task.ts` — outer loop controller
-- `src/runtime/local-session-loop.ts` — per-iteration execution logic
-- `src/runtime/search-mcp-tool-adapter.ts` — MCP search/fetch bridge
-- `src/policy-task/prompt-builder.ts` — agent contract definition
-- `vendor/search-mcp/` — vendored MCP worker used by the runtime
+- `src/app/run-generic-agent.ts` — Generic CLI entrypoint
+- `src/agent/agent-loop.ts` — model-owned research loop
+- `src/search/auto/` — Auto provider registry and bounded fusion
+- `src/fetch/` and `src/fetch-fusion/` — fetch providers and browser fallback
+- `src/adapters/http/` and `src/adapters/mcp/` — unified external adapters
+- `src/artifacts/generic-report.ts` — JSON/Markdown/HTML report rendering
+- `src/legacy/` and `vendor/search-mcp/` — explicit compatibility path
 
 ---
 
@@ -315,13 +315,9 @@ The current runtime behavior is intentionally stricter than before:
 
 Recently verified outcomes include:
 
-- the MCP-only default backend path is covered by regression tests
-- convergence regression covers:
-  - `post_convergence_review`
-  - `final_summary`
-  - `summarize_and_stop`
-- the latest AI product/access radar reaches `summarize_and_stop` with release and eligibility evidence
-- it no longer gets stuck at premature `finalize`
+- the Generic Agent, Auto, provider, fetch, evidence, report, HTTP, MCP, and monitor suites are covered by the test command
+- the main path is compiled by both policy and generic TypeScript projects
+- real provider and LLM runs remain environment-dependent and must be reported separately from offline tests
 
 ---
 
@@ -331,10 +327,10 @@ This repository is **not** trying to do the following:
 
 - hard-code policy conclusions into runtime logic
 - treat search snippets as final evidence
-- preserve legacy default search behavior for compatibility
+- make policy-specific logic part of the Generic Agent
 
 The intended direction is:
 
-- stronger MCP search/fetch quality
-- clearer prompt contracts
+- broader Auto provider coverage
+- clearer model/system responsibility boundaries
 - more reliable evidence-grounded summary outputs
