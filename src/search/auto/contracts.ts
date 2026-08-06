@@ -1,4 +1,4 @@
-import type { SearchResult, ToolOutcome } from '../../agent/types.ts';
+import type { CandidateQualityDiagnostics, SearchResult, ToolOutcome } from '../../agent/types.ts';
 
 export interface AutoSearchRequest {
   query: string;
@@ -43,4 +43,5 @@ export interface AutoDiagnostics {
   outputLimitedCount?: number;
   successfulEngineCount?: number;
   blockedEngineCount?: number;
+  candidateQuality?: CandidateQualityDiagnostics;
 }

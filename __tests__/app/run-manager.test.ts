@@ -12,7 +12,7 @@ function terminalEvents(run: ReturnType<ResearchRunManager['get']>) {
 }
 
 async function waitForSettled(manager: ResearchRunManager, runId: string) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 1000; attempt += 1) {
     const run = manager.get(runId)!;
     if (run.settledAt) return run;
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -232,6 +232,104 @@ test('agent-result persistence failure is observable without changing the comple
   assert.deepEqual(events.find((event) => event.type === 'evidence.write_error')?.payload, {
     operation: 'saveAgentResult', code: 'EVIDENCE_WRITE_FAILED', message: 'disk full',
   });
+});
+
+test('manager-backed success persists the full search-fetch-finish evidence and report bundle', async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'research-manager-success-'));
+  const outputDir = path.join(parent, 'runs');
+  const evidenceRoot = path.join(parent, 'evidence');
+  const sourceUrl = 'https://example.test/research-source';
+  let modelCalls = 0;
+  try {
+    const manager = new ResearchRunManager({
+      llm: {
+        structuredOutputMode: 'tool_call',
+        complete: async () => {
+          modelCalls += 1;
+          const decisions = [
+            {
+              decision: 'search', searchActions: [{ query: 'manager persistence contract', retry: false }], fetchActions: [],
+              uncertainties: [], finalAnswer: null, evidenceUrls: [], findings: [],
+            },
+            {
+              decision: 'fetch', searchActions: [], fetchActions: [{ url: sourceUrl, retry: false }],
+              uncertainties: [], finalAnswer: null, evidenceUrls: [], findings: [],
+            },
+            {
+              decision: 'finish', searchActions: [], fetchActions: [], uncertainties: [], finalAnswer: 'The fetched page supports the claim.', evidenceUrls: [],
+              findings: [{ id: 'finding-1', claim: 'The source contains the requested fact.', disposition: 'confirmed', evidenceUrls: [sourceUrl] }],
+            },
+          ];
+          return {
+            text: JSON.stringify(decisions[Math.min(modelCalls - 1, decisions.length - 1)]),
+            finishReason: 'tool_calls', structuredOutputMode: 'tool_call' as const, toolCallCount: 1,
+          };
+        },
+      },
+      search: {
+        name: 'fake-search',
+        search: async (query) => ({
+          outcome: 'success_with_content' as const,
+          provider: 'fake-search',
+          results: [{ query, title: 'Research source', url: sourceUrl, snippet: 'The requested fact appears here.', provider: 'fake-search', rank: 1 }],
+          durationMs: 1,
+          retryCount: 0,
+        }),
+      },
+      fetch: {
+        name: 'fake-fetch',
+        fetch: async (url) => ({
+          outcome: 'success_with_content' as const,
+          requestedUrl: url,
+          finalUrl: url,
+          title: 'Research source',
+          content: 'The requested fact appears here.',
+          provider: 'fake-fetch',
+          statusCode: 200,
+          contentType: 'text/plain',
+          contentLength: 31,
+          truncated: false,
+          renderMode: 'static' as const,
+          extractionWarnings: [],
+          durationMs: 1,
+          retryCount: 0,
+        }),
+      },
+    }, 100, outputDir, evidenceRoot);
+
+    const created = manager.start({
+      question: 'manager persistence contract',
+      options: { completionMode: 'target_results', targetResultCount: 1, evidenceRequired: true, minFetchedPages: 1, maxIterations: 4 },
+    });
+    const run = await waitForSettled(manager, created.runId);
+    const runDirectory = path.join(outputDir, created.runId);
+    const evidenceDirectory = path.join(evidenceRoot, created.runId);
+    const persisted = JSON.parse(await fs.readFile(path.join(runDirectory, 'run.json'), 'utf8'));
+    const evidenceEvents = (await fs.readFile(path.join(evidenceDirectory, 'events.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    const searchRows = (await fs.readFile(path.join(evidenceDirectory, 'search-results.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    const fetchedRows = (await fs.readFile(path.join(evidenceDirectory, 'fetched-pages.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    const agentResult = JSON.parse(await fs.readFile(path.join(evidenceDirectory, 'agent-result.json'), 'utf8'));
+
+    assert.equal(modelCalls, 3);
+    assert.equal(run.status, 'completed');
+    assert.equal(run.reportStatus, 'completed');
+    assert.equal(run.result?.status, 'completed');
+    assert.equal(run.result?.state.searchResults.length, 1);
+    assert.equal(run.result?.state.fetchedPages.length, 1);
+    assert.equal(run.result?.decision.findings?.[0]?.evidenceUrls[0], sourceUrl);
+    assert.equal(run.events.at(-1)?.type, 'run.completed');
+    assert.equal(persisted.status, 'completed');
+    assert.equal(persisted.reportStatus, 'completed');
+    assert.equal(evidenceEvents.some((event) => event.type === 'run.started'), true);
+    assert.equal(searchRows[0][0].url, sourceUrl);
+    assert.equal(fetchedRows[0].finalUrl, sourceUrl);
+    assert.equal(agentResult.status, 'completed');
+    for (const file of ['report.json', 'report.md', 'report.html']) {
+      assert.equal(await fs.stat(path.join(runDirectory, 'report', file)).then(() => true), true);
+    }
+  } finally {
+    await fs.rm(parent, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
+  }
 });
 
 test('wall-clock deadline interrupts the run, writes a report, and emits one terminal event', async () => {

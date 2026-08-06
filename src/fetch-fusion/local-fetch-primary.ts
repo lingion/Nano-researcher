@@ -439,6 +439,15 @@ function cleanGenericContent(content: string): string {
   return content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).join('\n');
 }
 
+export function isWeakFetchedContent(title: string, content: string): boolean {
+  const combined = `${title}\n${content}`.trim();
+  const readableChars = (combined.match(/[\p{L}\p{N}]/gu) ?? []).length;
+  return !combined
+    || combined.length < 400
+    || readableChars < 80
+    || /enable javascript|javascript required|请启用 javascript|正在加载|loading\.\.\.|captcha|验证码|安全验证|登录后继续|sign in to continue|access denied/i.test(combined);
+}
+
 function extractMainArticleSync(html: string, url: string, generic = false): HtmlExtractionResult {
   let dom: JSDOM | undefined;
   const warnings: string[] = [];
@@ -500,6 +509,7 @@ export async function fetchWithLocalPrimary(
       title?: string;
     } | string>;
   }).WebFetch;
+  let webFetchWarning: string | undefined;
 
   const prompt = options.generic
     ? `Fetch this page and return its main readable content. Limit output to about ${maxChars} characters. Preserve the page's title, body text, and links needed to understand the source.`
@@ -513,33 +523,26 @@ export async function fetchWithLocalPrimary(
         signal: options.signal,
       });
 
-      if (typeof response === 'string') {
-        const content = (options.generic ? cleanGenericContent(response) : cleanGovernmentContent(response)).slice(0, maxChars);
+      const webFetchContent = typeof response === 'string' ? response : response && typeof response === 'object' ? response.content ?? '' : '';
+      const content = (options.generic ? cleanGenericContent(webFetchContent) : cleanGovernmentContent(webFetchContent)).slice(0, maxChars);
+      const finalUrl = typeof response === 'object' && response?.finalUrl ? response.finalUrl : url;
+      const title = typeof response === 'object' && response?.title ? response.title : '';
+      assertSafeNetworkTarget(finalUrl);
+      const weakWebFetch = isWeakFetchedContent(title, content);
+      if (!weakWebFetch || typeof options.fetchImpl !== 'function') {
         return normalizeFetchedPage({
           requestedUrl: url,
-          finalUrl: url,
-          title: '',
+          finalUrl,
+          title,
           content,
           backend: 'local-fetch-primary',
           contentLength: new TextEncoder().encode(content).byteLength,
-          ...(options.generic ? {} : { evidence_clues: buildEvidenceClues({ requestedUrl: url, finalUrl: url, title: '', content }) }),
+          ...(weakWebFetch ? { extractionWarnings: ['webfetch_weak: response is empty, short, or appears to be a challenge page'] } : {}),
+          ...(options.generic ? {} : { evidence_clues: buildEvidenceClues({ requestedUrl: url, finalUrl, title, content }) }),
         }, { generic: options.generic });
       }
 
-      const content = (options.generic ? cleanGenericContent(response.content ?? '') : cleanGovernmentContent(response.content ?? '')).slice(0, maxChars);
-      const finalUrl = response.finalUrl ?? url;
-      assertSafeNetworkTarget(finalUrl);
-      const title = response.title ?? '';
-
-      return normalizeFetchedPage({
-        requestedUrl: url,
-        finalUrl,
-        title,
-        content,
-        backend: 'local-fetch-primary',
-        contentLength: new TextEncoder().encode(content).byteLength,
-        ...(options.generic ? {} : { evidence_clues: buildEvidenceClues({ requestedUrl: url, finalUrl, title, content }) }),
-      }, { generic: options.generic });
+      webFetchWarning = 'webfetch_weak: response is empty, short, or appears to be a challenge page; falling back to local fetch';
     } catch (error) {
       if (isCancellation(error, options.signal)) throw error;
       if (typeof options.fetchImpl !== 'function') {
@@ -596,6 +599,7 @@ export async function fetchWithLocalPrimary(
     truncated: htmlWasTruncated,
     ...(options.generic ? {} : { evidence_clues: buildEvidenceClues({ requestedUrl: url, finalUrl, title, content, potentialOfficialUrls: extracted.officialUrls }) }),
     extractionWarnings: [
+      ...(webFetchWarning ? [webFetchWarning] : []),
       ...extractionWarnings,
       ...(htmlWasTruncated ? [`html_truncated: response exceeded ${MAX_HTML_CHARS} characters`] : []),
       ...(content.length < 400 ? ['static_extraction_weak: extracted content is too short for reliable evidence'] : []),

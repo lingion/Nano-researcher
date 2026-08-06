@@ -71,9 +71,18 @@ export function parseQuery(rawQuery) {
   const optional = [];
   const excluded = [];
   const phrases = [];
+  const anyOf = [];
   const positiveParts = [];
   const filters = emptyFilters();
   const diagnostics = [];
+  let lastPositive = null;
+  let currentOrGroup = null;
+  let pendingOr = false;
+  const finishOrGroup = () => {
+    if (currentOrGroup?.length) anyOf.push(currentOrGroup);
+    currentOrGroup = null;
+    pendingOr = false;
+  };
   let index = 0;
 
   while (index < raw.length) {
@@ -94,11 +103,20 @@ export function parseQuery(rawQuery) {
       continue;
     }
 
+    if (!modifier && !atom.quoted && atom.value.toLocaleLowerCase() === "or") {
+      if (lastPositive !== null) {
+        currentOrGroup ??= [lastPositive];
+        pendingOr = true;
+      }
+      continue;
+    }
+
     const colon = !modifier && !atom.quoted ? atom.value.indexOf(":") : -1;
     if (colon > 0) {
       const key = atom.value.slice(0, colon).toLowerCase();
       const value = atom.value.slice(colon + 1);
       if (FILTER_NAMES.includes(key)) {
+        finishOrGroup();
         addFilter(filters, diagnostics, key, value);
         continue;
       }
@@ -106,22 +124,30 @@ export function parseQuery(rawQuery) {
     }
 
     if (modifier === "-") {
+      finishOrGroup();
       excluded.push(atom.value);
       continue;
     }
+    if (!pendingOr) finishOrGroup();
     if (modifier === "+") required.push(atom.value);
     else if (!atom.quoted) optional.push(atom.value);
     else if (modifier === "") phrases.push(atom.value);
     positiveParts.push(atom.value);
+    if (pendingOr && currentOrGroup) currentOrGroup.push(atom.value);
+    lastPositive = atom.value;
+    pendingOr = false;
   }
 
+  finishOrGroup();
+  const alternativeValues = new Set(anyOf.flat());
   return {
     raw,
     text: positiveParts.join(" "),
-    required,
+    required: required.filter((term) => !alternativeValues.has(term)),
     optional,
     excluded,
-    phrases,
+    phrases: phrases.filter((phrase) => !alternativeValues.has(phrase)),
+    anyOf,
     filters,
     diagnostics
   };

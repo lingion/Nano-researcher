@@ -146,13 +146,12 @@ export function parseAgentDecision(raw: string): DecisionParseResult {
     findings.push({ id, claim, disposition: finding.disposition, evidenceUrls: findingEvidenceUrls });
   }
   if (finalDecision !== 'finish' && findings.length > 0) return error('decision', 'INVALID_FINDINGS', 'Only finish may include findings.');
-  if (finalDecision === 'finish') {
-    const boundEvidenceUrls = [...new Set(findings.flatMap((finding) => finding.evidenceUrls))].sort();
-    const submittedEvidenceUrls = [...evidenceUrls].sort();
-    if (JSON.stringify(boundEvidenceUrls) !== JSON.stringify(submittedEvidenceUrls)) {
-      return error('decision', 'EVIDENCE_BINDING_MISMATCH', 'finish evidenceUrls must exactly equal the union of findings evidenceUrls.');
-    }
-  }
+  // Finding-level citations are the source of truth. The top-level field stays
+  // validated for wire compatibility, but is derived below so duplicated long
+  // URLs cannot drift between two model-generated copies.
+  const boundEvidenceUrls = finalDecision === 'finish'
+    ? [...new Set(findings.flatMap((finding) => finding.evidenceUrls))]
+    : [];
   const uncertainties = input.uncertainties as string[];
   return {
     ok: true,
@@ -162,7 +161,7 @@ export function parseAgentDecision(raw: string): DecisionParseResult {
       fetchActions,
       uncertainties,
       ...(finalDecision === 'finish' ? { finalAnswer: normalizeFinalAnswer(input.finalAnswer as string) } : {}),
-      ...(evidenceUrls.length > 0 ? { evidenceUrls } : {}),
+      ...(boundEvidenceUrls.length > 0 ? { evidenceUrls: boundEvidenceUrls } : {}),
       ...(findings.length > 0 ? { findings } : {}),
     },
   };

@@ -2,8 +2,9 @@ import { OpenAiCompatibleProvider } from '../llm/openai-compatible.ts';
 import type { LlmProvider } from '../llm/provider.ts';
 import type { FetchResponse } from '../agent/types.ts';
 import type { FetchProvider } from '../fetch/provider.ts';
+import type { FetchedPageRecord } from '../fetch-fusion/types.ts';
 import type { SearchProvider } from '../search/provider.ts';
-import { closeHtmlExtractionPool, fetchWithLocalPrimary } from '../fetch-fusion/local-fetch-primary.ts';
+import { closeHtmlExtractionPool, fetchWithLocalPrimary, isWeakFetchedContent } from '../fetch-fusion/local-fetch-primary.ts';
 import { AutoSearchProvider } from '../search/auto/auto.ts';
 import { builtInSearchEngines } from '../search/auto/providers/engines.ts';
 import { createPlaywrightBrowserAdapter } from '../fetch-fusion/browser-fetch.ts';
@@ -54,6 +55,22 @@ export function createGenericSearchProvider(): SearchProvider {
   return new AutoSearchProvider({ engines: builtInSearchEngines, maxEngineCalls: 8, deadlineMs: 15_000, limit: 12 });
 }
 
+export function classifyGenericFetchPage(page: Pick<FetchedPageRecord, 'statusCode' | 'title' | 'content'>): {
+  outcome: Extract<FetchResponse['outcome'], 'success_with_content' | 'success_empty' | 'http_error'>;
+  error?: { code: string; message: string };
+} {
+  const statusCode = Number(page.statusCode);
+  if (Number.isFinite(statusCode) && statusCode >= 400) {
+    return {
+      outcome: 'http_error',
+      error: { code: 'HTTP_STATUS', message: `Fetch returned HTTP ${statusCode}` },
+    };
+  }
+  return page.content.trim() && !isWeakFetchedContent(page.title, page.content)
+    ? { outcome: 'success_with_content' }
+    : { outcome: 'success_empty' };
+}
+
 export function createGenericFetchProvider(): FetchProvider {
   const browserAdapter = createPlaywrightBrowserAdapter({ executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH });
   return {
@@ -69,13 +86,15 @@ export function createGenericFetchProvider(): FetchProvider {
           browserAdapter,
           generic: true,
         });
+        const classification = classifyGenericFetchPage(page);
         return {
-          outcome: page.content.trim() ? 'success_with_content' : 'success_empty',
+          outcome: classification.outcome,
           requestedUrl: page.requestedUrl,
           finalUrl: page.finalUrl,
           title: page.title,
           content: page.content,
           provider: 'local-fetch-primary',
+          ...(page.statusCode !== undefined ? { statusCode: page.statusCode } : {}),
           contentType: page.contentType,
           contentLength: page.contentLength ?? new TextEncoder().encode(page.content).byteLength,
           truncated: page.truncated,
@@ -83,6 +102,7 @@ export function createGenericFetchProvider(): FetchProvider {
           extractionWarnings: page.extractionWarnings ?? [],
           durationMs: Date.now() - started,
           retryCount: 0,
+          ...(classification.error ? { error: classification.error } : {}),
         };
       } catch (error) {
         if (options?.signal?.aborted) throw options.signal.reason ?? error;

@@ -1,7 +1,12 @@
-# Production Ready Handoff
+# Historical Production Baseline Handoff (Legacy Policy Runtime)
 
 Generated: 2026-06-05
 Project: `Nano-researcher` (legacy repository slug: `local-policy-agent`)
+
+> **Status:** Historical documentation for the June 2026 legacy policy baseline.
+> It is not a current production-readiness claim for the Generic runtime or for
+> the current worktree. For the current Generic architecture, capability
+> boundary, and verification status, use `README.md` and `README.zh.md`.
 
 ## 1. Final Repository State
 
@@ -220,9 +225,9 @@ grep -RIn '/Users/lingion' package.json tsconfig.json src bin scripts __tests__ 
 
 Observed result: no output.
 
-## 6. Engineering Handoff Conclusion
+## 6. Historical Engineering Handoff Conclusion
 
-The repository is ready for push or transfer as a production baseline:
+The statements in this section describe the June 2026 legacy baseline only:
 
 - git baseline is committed
 - Heavy Prompt is frozen and documented
@@ -232,4 +237,16 @@ The repository is ready for push or transfer as a production baseline:
 - local absolute-path dependencies have been removed from source/test/doc surfaces
 - build and offline regression have been verified from a clean install
 
-Use `pnpm install`, `pnpm build`, and `pnpm test:fixture` as the first acceptance gate on any new machine.
+They must not be used as evidence that the current Generic worktree is
+production-ready. For the current repository, use the Generic gates:
+
+```bash
+pnpm test
+pnpm build
+git diff --check
+```
+
+The current Generic runtime still depends on external LLM/search availability,
+has explicit bounded interruption and restart semantics, and has no claim of
+high availability or in-flight conversation resume. A successful Git push is
+not itself proof of CI, deployment, or provider reliability.

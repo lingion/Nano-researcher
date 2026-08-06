@@ -6,6 +6,7 @@ import { performance } from 'node:perf_hooks';
 import {
   createHtmlExtractionPool,
   fetchWithLocalPrimary,
+  isWeakFetchedContent,
   normalizeFetchedPage,
   type HtmlExtractionWorker,
 } from '../../src/fetch-fusion/local-fetch-primary.ts';
@@ -203,6 +204,27 @@ test('local fetch primary wrapper uses global WebFetch when available', async ()
   }
 });
 
+test('WebFetch evidence clues use the returned title and final URL', async () => {
+  const original = (globalThis as { WebFetch?: unknown }).WebFetch;
+  (globalThis as { WebFetch?: (input: { url: string; prompt: string }) => Promise<unknown> }).WebFetch = async () => ({
+    finalUrl: 'https://news.example.com/reprint/notice',
+    title: '转载通知〔2026〕7号',
+    content: 'Official notice content. '.repeat(40),
+  });
+
+  try {
+    const { fetchWithLocalPrimary } = await import('../../src/fetch-fusion/local-fetch-primary.ts');
+    const result = await fetchWithLocalPrimary('https://source.gov.cn/policy', 20_000);
+    assert.equal(result.finalUrl, 'https://news.example.com/reprint/notice');
+    assert.equal(result.title, '转载通知〔2026〕7号');
+    assert.equal(result.evidence_clues?.is_suspected_reprint, true);
+    assert.equal(result.evidence_clues?.extracted_doc_no, '转载通知〔2026〕7号');
+  } finally {
+    if (original === undefined) delete (globalThis as { WebFetch?: unknown }).WebFetch;
+    else (globalThis as { WebFetch?: unknown }).WebFetch = original;
+  }
+});
+
 test('generic fetch keeps generic page content and does not inject policy-specific fetch instructions', async () => {
   const original = (globalThis as { WebFetch?: unknown }).WebFetch;
   const calls: Array<{ prompt: string }> = [];
@@ -351,6 +373,38 @@ test('local fetch primary wrapper falls back from WebFetch to raw fetch with bro
   }
 });
 
+test('local fetch primary falls through a weak WebFetch shell to static extraction', async () => {
+  const original = (globalThis as { WebFetch?: unknown }).WebFetch;
+  const calls: string[] = [];
+  (globalThis as { WebFetch?: (input: { url: string; prompt: string }) => Promise<unknown> }).WebFetch = async () => ({
+    title: 'Loading',
+    content: 'enable javascript',
+  });
+
+  try {
+    const { fetchWithLocalPrimary } = await import('../../src/fetch-fusion/local-fetch-primary.ts');
+    const result = await fetchWithLocalPrimary('https://example.gov.cn/preview', 20_000, {
+      generic: true,
+      fetchImpl: async (url) => {
+        calls.push(url);
+        return {
+          status: 200,
+          url,
+          headers: { get: () => 'text/html' },
+          text: async () => `<html><head><title>Preview</title></head><body><article>${'Official preview content. '.repeat(80)}</article></body></html>`,
+        };
+      },
+    });
+
+    assert.deepEqual(calls, ['https://example.gov.cn/preview']);
+    assert.match(result.content, /Official preview content/);
+    assert.match(result.extractionWarnings?.[0] ?? '', /webfetch_weak/);
+  } finally {
+    if (original === undefined) delete (globalThis as { WebFetch?: unknown }).WebFetch;
+    else (globalThis as { WebFetch?: unknown }).WebFetch = original;
+  }
+});
+
 test('local fetch primary propagates abort signal to raw fetch fallback', async () => {
   const original = (globalThis as { WebFetch?: unknown }).WebFetch;
   delete (globalThis as { WebFetch?: unknown }).WebFetch;
@@ -425,6 +479,11 @@ test('local fetch primary marks short static extraction as weak evidence', async
   } finally {
     if (original !== undefined) (globalThis as { WebFetch?: unknown }).WebFetch = original;
   }
+});
+
+test('weak extracted content is not eligible for a successful fetch outcome', () => {
+  assert.equal(isWeakFetchedContent('中国政府网', '版权所有 中国政府网'), true);
+  assert.equal(isWeakFetchedContent('Official preview', 'Official preview content. '.repeat(40)), false);
 });
 
 test('local fetch primary wrapper extracts evidence clues from a suspected reprint page', async () => {

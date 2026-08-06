@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createGenericLlmProvider, createGenericFetchProvider } from '../../src/app/create-generic-dependencies.ts';
+import { createGenericLlmProvider, createGenericFetchProvider, classifyGenericFetchPage } from '../../src/app/create-generic-dependencies.ts';
 
 test('generic LLM composition requires explicit gateway credentials', () => {
   assert.throws(() => createGenericLlmProvider({}), /NANOCLAW_BASE_URL and NANOCLAW_API_KEY/);
@@ -29,4 +29,27 @@ test('generic fetch composition preserves cancellation instead of reporting a tr
   } finally {
     await provider.close?.();
   }
+});
+
+test('generic fetch classifies HTTP failures before considering returned page text', () => {
+  const result = classifyGenericFetchPage({
+    statusCode: 404,
+    title: 'Not found',
+    content: 'This response contains enough text to look readable, but the server returned a missing page.',
+  });
+
+  assert.deepEqual(result, {
+    outcome: 'http_error',
+    error: { code: 'HTTP_STATUS', message: 'Fetch returned HTTP 404' },
+  });
+});
+
+test('generic fetch keeps a 200 challenge or weak extraction as an empty result', () => {
+  const result = classifyGenericFetchPage({
+    statusCode: 200,
+    title: 'Loading',
+    content: 'enable javascript',
+  });
+
+  assert.deepEqual(result, { outcome: 'success_empty' });
 });

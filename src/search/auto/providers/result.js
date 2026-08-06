@@ -17,15 +17,37 @@ export function providerLimit(value) {
   return Math.max(1, Math.min(50, Math.floor(number)));
 }
 
+/**
+ * Normalize only metadata explicitly supplied by a Provider. This boundary
+ * must not derive authority or provenance from a URL, hostname, provider name,
+ * source family, title, or query.
+ */
+export function normalizeSourceProvenance(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value;
+  const provenance = {};
+  const authorityScore = Number(candidate.authorityScore);
+  if (Number.isFinite(authorityScore) && authorityScore >= 0) provenance.authorityScore = authorityScore;
+  if (typeof candidate.authorityBasis === "string" && candidate.authorityBasis.trim()) {
+    provenance.authorityBasis = candidate.authorityBasis.trim();
+  }
+  return Object.keys(provenance).length ? provenance : undefined;
+}
+
 export function providerSuccess({ provider, sourceFamily, resultType, records, response, url, diagnostics = {} }) {
-  const normalized = records.map((record, index) => ({
-    ...record,
-    displayUrl: record.displayUrl || record.url,
-    provider,
-    sourceFamily,
-    resultType: record.resultType || resultType,
-    providerRank: index + 1
-  }));
+  const normalized = records.map((record, index) => {
+    const { sourceProvenance: rawSourceProvenance, ...recordWithoutSourceProvenance } = record;
+    const sourceProvenance = normalizeSourceProvenance(rawSourceProvenance);
+    return {
+      ...recordWithoutSourceProvenance,
+      displayUrl: record.displayUrl || record.url,
+      provider,
+      sourceFamily,
+      resultType: record.resultType || resultType,
+      providerRank: index + 1,
+      ...(sourceProvenance ? { sourceProvenance } : {})
+    };
+  });
   const attempts = Array.isArray(diagnostics.attempts) ? diagnostics.attempts : [attemptDiagnostic({ url, response, records, diagnostics, retryCount: diagnostics.retryCount ?? 0 })];
   const attemptRetryCount = sumAttempts(attempts, "retryCount");
   const attemptRequestCount = sumRequests(attempts);
@@ -59,7 +81,8 @@ export function diagnoseHtml({ provider, html, responseUrl, recordCount }) {
   const marker = {
     bing: /\bb_algo\b/.test(body),
     baidu: /\bc-result\b|\bc-container\b/.test(body),
-    sogou: /\bvrwrap\b|\bcitelinkclass\b/.test(body)
+    sogou: /\bvrwrap\b|\bvrresult\b|\bcitelinkclass\b/.test(body),
+    quark: /s-data-[^\s"']+/.test(body)
   }[provider] ?? false;
   const blockedUrl = /captcha|antispider|wappass|verify|unusual[-_ ]activity/.test(finalUrl);
   const blockedBody = !marker && /captcha|antispider|wappass|verify|unusual activity|验证码|安全验证/.test(body);

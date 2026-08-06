@@ -15,7 +15,7 @@ test('Auto stops at the engine budget and returns per-engine diagnostics', async
   const auto = new AutoSearchProvider({
     engines: ['one', 'two', 'three'].map((name) => engine(name, async (query) => {
       calls.push(name);
-      return { engine: name, outcome: 'success_with_content', results: [{ query, title: name, url: `https://${name}.example/`, snippet: name, provider: name, rank: 1 }], durationMs: 1, requestCount: 1, retryCount: 0 };
+      return { engine: name, outcome: 'success_with_content', results: [{ query, title: name, url: `https://${name}.example/`, snippet: query + ' ' + name, provider: name, rank: 1 }], durationMs: 1, requestCount: 1, retryCount: 0 };
     })),
     maxEngineCalls: 2,
     deadlineMs: 1000,
@@ -49,7 +49,7 @@ test('Auto runs one bounded provider batch without result-count early stopping',
   const calls: string[] = [];
   const make = (name: string, count: number): AutoEngine => engine(name, async (query) => {
     calls.push(name);
-    return { engine: name, outcome: count ? 'success_with_content' : 'success_empty', results: Array.from({ length: count }, (_, index) => ({ query, title: `${name}-${index}`, url: `https://${name}.example/${index}`, snippet: name, provider: name, rank: index + 1 })), durationMs: 1, requestCount: 1, retryCount: 0 };
+    return { engine: name, outcome: count ? 'success_with_content' : 'success_empty', results: Array.from({ length: count }, (_, index) => ({ query, title: `${name}-${index}`, url: `https://${name}.example/${index}`, snippet: query + ' ' + name, provider: name, rank: index + 1 })), durationMs: 1, requestCount: 1, retryCount: 0 };
   });
   const auto = new AutoSearchProvider({ engines: [make('primary-a', 1), make('primary-b', 0), make('fallback', 5)], maxEngineCalls: 3, deadlineMs: 1000, limit: 10 });
   const result = await auto.search('query');
@@ -118,7 +118,7 @@ test('Auto preserves sibling successes when one engine throws', async () => {
   const auto = new AutoSearchProvider({
     engines: [
       engine('broken', async () => { throw new Error('provider exploded'); }),
-      engine('healthy', async (query) => ({ engine: 'healthy', outcome: 'success_with_content', results: [{ query, title: 'Healthy', url: 'https://healthy.example', snippet: 'ok', provider: 'healthy' }], durationMs: 1, requestCount: 1, retryCount: 0 })),
+      engine('healthy', async (query) => ({ engine: 'healthy', outcome: 'success_with_content', results: [{ query, title: 'Healthy', url: 'https://healthy.example', snippet: query + ' ok', provider: 'healthy' }], durationMs: 1, requestCount: 1, retryCount: 0 })),
     ],
     maxEngineCalls: 2,
   });
@@ -198,6 +198,45 @@ test('provider normalization exposes ranker fields at the result boundary', () =
   assert.equal(response.results[0]?.metadata?.sourceFamily, undefined);
 });
 
+test('provider normalization preserves URL, freshness, and wrapper provenance for the ranker', () => {
+  const response = normalizeResponse({
+    records: [{
+      title: 'Mobile result',
+      url: 'https://wap.sogou.com/link?url=opaque',
+      snippet: 'wrapper',
+      publishedAt: '2026-08-03T06:40:00.000Z',
+      unresolvedWrapper: true,
+      displayUrl: 'wap.sogou.com/link?url=opaque',
+    }],
+    diagnostics: { status: 200 },
+  }, 'query', 'sogou');
+
+  assert.equal(response.results[0]?.publishedAt, '2026-08-03T06:40:00.000Z');
+  assert.equal(response.results[0]?.unresolvedWrapper, true);
+  assert.equal(response.results[0]?.displayUrl, 'wap.sogou.com/link?url=opaque');
+});
+
+test('provider normalization preserves explicit source provenance for transparent ranking', () => {
+  const response = normalizeResponse({
+    records: [{
+      title: 'Developer preview announcement',
+      url: 'https://example.com/preview',
+      snippet: 'The provider declared a source signal for this candidate.',
+      authorityScore: 0.8,
+      sourceProvenance: {
+        authorityScore: 0.8,
+        authorityBasis: 'provider_declared',
+      },
+    }],
+  }, 'preview', 'example');
+
+  assert.equal(response.results[0]?.authorityScore, 0.8);
+  assert.deepEqual(response.results[0]?.sourceProvenance, {
+    authorityScore: 0.8,
+    authorityBasis: 'provider_declared',
+  });
+});
+
 test('provider normalization aggregates retries and requests from nested attempts', () => {
   const response = normalizeResponse({
     records: [],
@@ -247,4 +286,92 @@ test('SearchResponseEngine counts nested attempts instead of top-level provider 
   const result = await engine.run('query', { signal: new AbortController().signal, deadlineMs: 1000, request: { query: 'query', limit: 10, deadlineMs: 1000 } });
   assert.equal(result.details?.attemptCount, 2);
   assert.equal(result.requestCount, 3);
+});
+
+test('Auto exposes source-neutral candidate quality diagnostics without inferring provenance', async () => {
+  const auto = new AutoSearchProvider({
+    engines: [engine('fixture', async (query) => ({
+      engine: 'fixture',
+      outcome: 'success_with_content',
+      durationMs: 1,
+      requestCount: 1,
+      retryCount: 0,
+      results: [
+        {
+          query,
+          title: 'Preview announcement',
+          snippet: 'A preview announcement.',
+          url: 'https://example.com/preview',
+          provider: 'fixture',
+          sourceFamily: 'general-web',
+          authorityScore: 0.8,
+          sourceProvenance: { authorityScore: 0.8, authorityBasis: 'provider_declared' },
+        },
+        {
+          query,
+          title: 'Duplicate preview announcement',
+          snippet: 'A duplicate preview announcement.',
+          url: 'https://example.com/preview',
+          provider: 'fixture',
+        },
+        {
+          query,
+          title: 'Unresolved wrapper',
+          snippet: 'wrapper only',
+          url: 'https://www.sogou.com/link?url=opaque',
+          provider: 'fixture',
+          unresolvedWrapper: true,
+        },
+        {
+          query,
+          title: 'Invalid URL',
+          snippet: 'invalid URL',
+          url: 'not-a-url',
+          provider: 'fixture',
+        },
+        {
+          query,
+          title: '',
+          snippet: '',
+          url: 'https://example.com/empty',
+          provider: 'fixture',
+        },
+        {
+          query,
+          title: 'Offsite preview',
+          snippet: 'preview outside the requested site',
+          url: 'https://other.example/preview',
+          provider: 'fixture',
+        },
+        {
+          query,
+          title: 'Unrelated page',
+          snippet: 'nothing relevant here',
+          url: 'https://example.com/irrelevant',
+          provider: 'fixture',
+        },
+      ],
+    }))],
+    limit: 10,
+  });
+
+  const result = await auto.search('site:example.com preview');
+
+  assert.deepEqual(result.autoDiagnostics?.candidateQuality, {
+    inputCount: 7,
+    uniqueResultCount: 1,
+    outputResultCount: 1,
+    rejectionCounts: {
+      invalidUrl: 1,
+      unresolvedWrapper: 1,
+      missingText: 1,
+      queryConstraint: 1,
+      lowRelevance: 1,
+      duplicateUrl: 1,
+    },
+    inputExplicitProvenanceCount: 1,
+    uniqueExplicitProvenanceCount: 1,
+  });
+  assert.equal(result.results[0]?.sourceProvenance?.authorityBasis, 'provider_declared');
+  assert.equal(result.results[0]?.sourceProvenance?.authorityScore, 0.8);
 });

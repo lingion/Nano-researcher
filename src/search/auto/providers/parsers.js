@@ -115,7 +115,8 @@ function result(title, url, snippet, extra = {}) {
 
 function cardsByClass(html, tagName, className) {
   const tag = tagName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const classPattern = `<${tag}\\b[^>]*\\bclass\\s*=\\s*["'][^"']*\\b${className}\\b[^"']*["'][^>]*>`;
+  const classValue = `(?:["'][^"']*\\b${className}\\b[^"']*["']|[^\\s>]*\\b${className}\\b[^\\s>]*)`;
+  const classPattern = `<${tag}\\b[^>]*\\bclass\\s*=\\s*${classValue}[^>]*>`;
   const openTag = new RegExp(classPattern, "gi");
   const tagPattern = new RegExp(`</?${tag}\\b[^>]*>`, "gi");
   const source = String(html ?? "");
@@ -196,15 +197,16 @@ function parseBaiduCard(card) {
 }
 
 function parseSogouCard(card) {
-  const titleBlock = firstMatch(card, /<h3\b[^>]*\bclass\s*=\s*["'][^"']*\bvr-title\b[^"']*["'][^>]*>[\s\S]*?<\/h3>/i) || firstMatch(card, /<h3\b[^>]*>[\s\S]*?<\/h3>/i);
+  const titleBlock = firstMatch(card, /<h3\b[^>]*\bclass\s*=\s*(?:["'][^"']*\b(?:vr-title|vr-tit)\b[^"']*["']|[^\s>]*\b(?:vr-title|vr-tit)\b[^\s>]*).*?>[\s\S]*?<\/h3>/i) || firstMatch(card, /<h3\b[^>]*>[\s\S]*?<\/h3>/i);
   const titleAnchor = firstAnchor(titleBlock) || firstAnchor(card);
   const citeAnchor = firstAnchor(card, /<a\b[^>]*\bclass\s*=\s*["'][^"']*\bciteLinkClass\b[^"']*["'][^>]*>[\s\S]*?<\/a>/i);
-  const citeUrl = hrefFromAnchor(citeAnchor);
-  const titleUrl = hrefFromAnchor(titleAnchor);
+  const citeUrl = resolveSogouHref(attribute(citeAnchor, "data-url") || hrefFromAnchor(citeAnchor));
+  const titleUrl = resolveSogouHref(attribute(titleAnchor, "data-url") || hrefFromAnchor(titleAnchor));
   const url = citeUrl || titleUrl;
   if (isSogouNavigationUrl(url)) return null;
-  const unresolvedWrapper = !citeUrl && /^https?:\/\/(?:www\.)?sogou\.com\/link(?:[/?]|$)/i.test(titleUrl);
-  const snippet = firstMatch(card, /<p\b[^>]*>[\s\S]*?<\/p>/i);
+  const unresolvedWrapper = isSogouWrapperUrl(url);
+  const snippet = firstMatch(card, /<p\b[^>]*>[\s\S]*?<\/p>/i) ||
+    firstMatch(card, /<(?:a|div|p)\b[^>]*\bclass\s*=\s*["'][^"']*\b(?:txt-summary|c-abstract|result-snippet)\b[^"']*["'][^>]*>[\s\S]*?<\/(?:a|div|p)>/i);
   return result(titleBlock || titleAnchor, url, snippet, {
     ...(isSogouVideoUrl(url) ? { resultType: "video" } : {}),
     ...(unresolvedWrapper ? { unresolvedWrapper: true } : {})
@@ -216,10 +218,25 @@ function isSogouNavigationUrl(value) {
     const parsed = new URL(value);
     const host = parsed.hostname.toLowerCase();
     if (host === "fanyi.sogou.com" || host === "pic.sogou.com") return true;
-    return host === "www.sogou.com" && /^\/(?:web|sogou|aimode)(?:\/|$)/i.test(parsed.pathname);
+    return /^(?:sogou\.com|www\.sogou\.com|wap\.sogou\.com|m\.sogou\.com)$/.test(host) && /^\/(?:web|sogou|aimode|searchList\.jsp)(?:\/|$)/i.test(parsed.pathname);
   } catch {
     return false;
   }
+}
+
+function isSogouWrapperUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return /^(?:sogou\.com|www\.sogou\.com|wap\.sogou\.com|m\.sogou\.com)$/.test(parsed.hostname.toLowerCase()) &&
+      /^\/link(?:[/?]|$)/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function resolveSogouHref(value) {
+  const raw = String(value || "").trim();
+  return raw ? decodeWrappedUrl(raw, "https://wap.sogou.com") : "";
 }
 
 function isSogouVideoUrl(value) {
@@ -264,11 +281,121 @@ export function parseBaiduJson(data, limit = DEFAULT_LIMIT) {
 
 export function parseSogouHtml(html, limit = DEFAULT_LIMIT, options = {}) {
   const allowVideo = options.allowVideo === true;
-  const records = cardsByClass(html, "div", "vrwrap")
+  const cards = [
+    ...cardsByClass(html, "div", "vrwrap"),
+    ...cardsByClass(html, "div", "vrResult")
+  ];
+  const records = cards
     .map(parseSogouCard)
+    .filter((record) => Boolean(record?.snippet))
     .filter((record) => allowVideo || record?.resultType !== "video");
   const structured = uniqueResults(records, limit);
-  return structured.length ? structured : parseGenericLinks(html, limit, "https://www.sogou.com", ["sogou.com"]);
+  return structured.length
+    ? structured
+    : parseGenericLinks(html, limit, "https://www.sogou.com", ["sogou.com"]).filter((record) => record.snippet);
+}
+
+function timestampToIso(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "";
+  const milliseconds = numeric < 1e12 ? numeric * 1000 : numeric;
+  try {
+    return new Date(milliseconds).toISOString();
+  } catch {
+    return "";
+  }
+}
+
+function isQuarkNavigationUrl(value) {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    return host === "sm.cn" || host.endsWith(".sm.cn");
+  } catch {
+    return false;
+  }
+}
+
+function quarkText(value) {
+  if (Array.isArray(value)) return textContent(value.map((item) => quarkText(item)).join(" | "));
+  if (value && typeof value === "object") return quarkText(value.content ?? value.text ?? value.value ?? "");
+  return textContent(value);
+}
+
+function quarkRecord(data, resultType = "web") {
+  const title = quarkText(data?.titleProps?.content ?? data?.title?.content ?? data?.title);
+  const url = data?.sourceProps?.dest_url || data?.source?.dest_url || data?.title_url || data?.normal_url || data?.url;
+  const snippet = quarkText(
+    data?.summaryProps?.content ??
+    data?.message?.replyContent ??
+    data?.show_body ??
+    data?.desc ??
+    data?.message?.content_text ??
+    data?.summary ??
+    data?.content
+  );
+  const publishedAt = timestampToIso(data?.sourceProps?.time ?? data?.source?.time ?? data?.publish_time);
+  if (isQuarkNavigationUrl(url)) return null;
+  return result(title, url, snippet, {
+    ...(publishedAt ? { publishedAt } : {}),
+    ...(resultType !== "web" ? { resultType } : {})
+  });
+}
+
+const QUARK_RESULT_TYPES = {
+  addition: "web",
+  ai_page: "web",
+  baike_sc: "knowledge",
+  finance_shuidi: "finance",
+  kk_yidian_all: "news",
+  life_show_general_image: "image",
+  med_struct: "medical",
+  music_new_song: "music",
+  nature_result: "web",
+  news_uchq: "news",
+  ss_note: "web",
+  ss_doc: "web",
+  ss_kv: "web",
+  ss_pic: "image",
+  ss_text: "web",
+  ss_video: "video",
+  baike: "knowledge",
+  structure_web_novel: "web",
+  travel_dest_overview: "travel",
+  travel_ranking_list: "travel"
+};
+
+function quarkItems(data) {
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== "object") return [];
+  for (const key of ["list", "feed", "image", "hit3"]) {
+    if (Array.isArray(data[key])) return data[key];
+  }
+  return [data];
+}
+
+function parseQuarkCategory(data, sourceCategory) {
+  const resultType = QUARK_RESULT_TYPES[sourceCategory];
+  if (!resultType) return [];
+  return quarkItems(data).map((item) => quarkRecord(item, resultType)).filter(Boolean);
+}
+
+export function parseQuarkHtml(html, limit = DEFAULT_LIMIT) {
+  const scripts = String(html || "").match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [];
+  const records = [];
+  for (const script of scripts) {
+    if (!/type\s*=\s*["']application\/json["']/i.test(script) ||
+      !/id\s*=\s*["']s-data-[^"']+["']/i.test(script) ||
+      !/data-used-by\s*=\s*["']hydrate["']/i.test(script)) continue;
+    const body = script.replace(/^<script\b[^>]*>/i, "").replace(/<\/script>$/i, "").trim();
+    try {
+      const payload = JSON.parse(body);
+      records.push(...parseQuarkCategory(payload?.data?.initialData, payload?.extraData?.sc));
+    } catch {
+      // One malformed hydration block must not discard later valid blocks.
+    }
+  }
+  return uniqueResults(records, limit);
 }
 
 export function parseBaiduGenericHtml(html, limit = DEFAULT_LIMIT) {

@@ -261,7 +261,7 @@ test('OpenAI-compatible provider retries an invalid forced-tool response at the 
   assert.equal(events[1]?.code, 'LLM_INVALID_RESPONSE');
 });
 
-test('OpenAI-compatible provider reports repeated forced-tool contract failures as invalid responses', async () => {
+test('OpenAI-compatible provider returns repeated forced-tool contract failures for agent recovery', async () => {
   const provider = new OpenAiCompatibleProvider({
     baseUrl: 'https://gateway.test/v1', apiKey: 'test-key', model: 'test-model', responseFormatMode: 'tool_call', maxAttempts: 2, retryDelayMs: 0,
     fetchImpl: async () => response({ choices: [{ message: { tool_calls: [
@@ -270,10 +270,14 @@ test('OpenAI-compatible provider reports repeated forced-tool contract failures 
     ] } }] }),
   });
 
-  await assert.rejects(
-    () => provider.complete({ messages: [{ role: 'user', content: 'x' }], responseTool: { name: 'submit_research_decision', description: 'Submit one decision.', parameters: { type: 'object' } } }),
-    (error: unknown) => error instanceof LlmProviderError && error.code === 'LLM_INVALID_RESPONSE' && error.transportAttempts === 2,
-  );
+  const result = await provider.complete({
+    messages: [{ role: 'user', content: 'x' }],
+    responseTool: { name: 'submit_research_decision', description: 'Submit one decision.', parameters: { type: 'object' } },
+  });
+  assert.equal(result.protocolError?.code, 'INVALID_TOOL_CALL');
+  assert.match(result.protocolError?.message ?? '', /Expected exactly one submit_research_decision/);
+  assert.equal(result.toolCallCount, 2);
+  assert.equal(result.transportAttempts, 2);
 });
 
 test('OpenAI-compatible provider never calls the gateway for an already-aborted request', async () => {

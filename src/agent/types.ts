@@ -30,6 +30,7 @@ export interface AgentDecision {
   fetchActions: Array<{ url: string; retry?: boolean }>;
   uncertainties: string[];
   finalAnswer?: string;
+  /** Derived from finding-level citations by the decision parser. */
   evidenceUrls?: string[];
   findings?: Array<{
     id: string;
@@ -49,7 +50,35 @@ export interface SearchResult {
   providerRank?: number;
   sourceFamily?: string;
   resultType?: string;
+  authorityScore?: number;
+  sourceProvenance?: {
+    authorityScore?: number;
+    authorityBasis?: string;
+  };
+  displayUrl?: string;
+  resolvedUrl?: string;
+  publishedAt?: string;
+  updatedAt?: string;
+  unresolvedWrapper?: boolean;
+  score?: number;
+  scoreBreakdown?: Record<string, number>;
   metadata?: Record<string, unknown>;
+}
+
+export interface CandidateQualityDiagnostics {
+  inputCount: number;
+  uniqueResultCount: number;
+  outputResultCount?: number;
+  rejectionCounts: {
+    invalidUrl: number;
+    unresolvedWrapper: number;
+    missingText: number;
+    queryConstraint: number;
+    lowRelevance: number;
+    duplicateUrl: number;
+  };
+  inputExplicitProvenanceCount: number;
+  uniqueExplicitProvenanceCount: number;
 }
 
 export interface SearchResponse {
@@ -71,6 +100,7 @@ export interface SearchResponse {
     outputLimitedCount?: number;
     successfulEngineCount?: number;
     blockedEngineCount?: number;
+    candidateQuality?: CandidateQualityDiagnostics;
   };
 }
 
@@ -81,6 +111,7 @@ export interface FetchResponse {
   title: string;
   content: string;
   provider: string;
+  statusCode?: number;
   contentType?: string;
   contentLength?: number;
   truncated?: boolean;

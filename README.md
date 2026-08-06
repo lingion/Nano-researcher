@@ -230,6 +230,13 @@ The provider sets `tool_choice` to that function and
 channel. If a gateway ignores the tool contract, the response becomes a
 structured `LLM_INVALID_RESPONSE`/protocol diagnostic.
 
+The provider retries this response at the transport boundary first. If the
+bounded retries are exhausted, a recognized missing or malformed tool call is
+returned as `protocolError: INVALID_TOOL_CALL` so the Agent can make its bounded
+protocol-recovery request. The runtime never guesses a free-text answer; HTTP,
+network, timeout, and malformed-envelope failures keep their provider-error
+semantics.
+
 ### 4. The protocol parser validates the decision
 
 `src/agent/decision-protocol.ts` rejects:
@@ -245,7 +252,7 @@ structured `LLM_INVALID_RESPONSE`/protocol diagnostic.
 - `fetch` decisions that do not contain only fetch actions;
 - `review` or `finish` decisions that contain actions;
 - findings outside the `confirmed`/`uncertain`/`excluded` enum;
-- findings whose evidence bindings disagree with top-level `evidenceUrls`.
+- malformed or unsafe finding-level evidence URLs.
 
 The parser also requires an explicit boolean `retry` field on every action.
 Repeating an exact query or URL requires `retry: true`, and an exact action is
@@ -271,6 +278,14 @@ content, action history, and uncertainties are truncated by character budgets;
 this is context transport, not a hidden relevance selector. Candidate selection
 and finding judgment remain model-owned.
 
+The Agent prompt keeps each finding bound to a model-submitted claim, its
+disposition, and its fetched evidence URLs. It does not prescribe a
+domain-specific unit of analysis or automatically merge pages by release,
+program, audience, or date; semantic grouping remains model-owned after Fetch.
+`transport_error` and `success_empty` are outcomes, not evidence. These are
+model-facing transport and evidence instructions, not an automatic truth
+classifier.
+
 ### 6. The loop applies completion semantics
 
 There are two explicit user-selected completion modes:
@@ -284,10 +299,17 @@ If `completionMode` is omitted, the agent uses natural finish semantics. If
 `evidenceRequired` is true, a finish cannot complete without cited fetched
 evidence. Search discovery alone never counts as evidence.
 
-The loop has a hard maximum of 100 iterations. An incomplete finish is allowed
-one bounded review opportunity; repeating an incomplete finish without a new
-action ends with `completion_not_reached`. A hard limit produces an honest
-`interrupted` result and preserves the partial answer and uncertainties.
+The target count is a requested goal, not permission for unbounded search. An
+incomplete finish returns an honest `interrupted` result with
+`completion_not_reached`, preserving the partial answer, findings, and
+uncertainties; it is not reported as `completed`. The loop also has a hard
+maximum of 100 iterations, and a hard deadline preserves the same partial state
+when the model has not submitted a finish.
+
+After search or fetch, the model must issue one bounded `review` decision before
+an incomplete finish. That review must either identify a concrete evidence gap
+for another search/fetch or record explicit blockers and then finish honestly;
+the model must not repeat review without new evidence.
 
 ## LLM Decision Contract
 
@@ -322,9 +344,11 @@ finding has this shape:
 }
 ```
 
-The runtime validates that the union of all finding evidence URLs exactly equals
-the finish-level `evidenceUrls`. This prevents a report from claiming evidence
-that is not bound to a finding.
+Finding-level evidence URLs are the source of truth. The runtime validates every
+finding citation and derives finish-level `evidenceUrls` from their union. The
+top-level field remains in the wire envelope for compatibility and should be
+submitted as `[]`; it is not compared against a second model-generated copy, so
+long URLs cannot cause a protocol failure merely because the copies drift.
 
 ### LLM transport behavior
 
@@ -422,18 +446,29 @@ The ranking pipeline is:
    and trim trailing slashes;
 2. reject invalid URLs and unresolved Baidu/Sogou/Bing wrapper links;
 3. reject records without title and snippet;
-4. deduplicate canonical URLs;
+4. group occurrences by canonical URL without deleting distinct URLs;
 5. apply explicit query constraints such as phrases, required/excluded terms,
    `site:`, `domain:`, `filetype:`, `source:`, `type:`, `after:`, and `before:`;
 6. calculate a score from title/snippet/URL lexical BM25-style matches, phrase
-   matches, token coverage, declared authority score, provider rank prior, a
-   deliberately small reciprocal-rank fusion prior, and freshness when the
-   query asks for recent/current information;
-7. remove near-duplicate titles and sort deterministically by score then URL.
+   matches, token coverage, declared authority score, freshness when the query
+   asks for recent/current information, and a standard reciprocal-rank fusion
+   contribution after canonical URL grouping. RRF is an explicit cross-provider
+   agreement signal, not a replacement for lexical relevance;
+7. sort deterministically by fused score, base relevance score, then URL.
 
-The result exposes `scoreBreakdown` and rejection counters for diagnosis. The
-ranker does not infer that a domain is official or that a page proves the
-question. The Agent must fetch and judge the candidate.
+Distinct URLs are retained even when their titles are similar. Semantic or
+factual duplication is decided by the Agent after Fetch, where page content and
+citations are available. Provider rank, resolved/display URL provenance,
+publication timestamps, and unresolved-wrapper markers remain attached to
+normalized records and fusion diagnostics.
+
+The result exposes `scoreBreakdown` and `autoDiagnostics.candidateQuality` for
+diagnosis. `candidateQuality` reports input, deduplicated, output, rejection,
+and explicitly supplied source-provenance counts. These are transport and
+ranking facts only: the ranker does not infer that a domain is official or that
+a page proves the question. Provider adapters may supply `sourceProvenance`
+explicitly; the producer boundary trims valid fields and drops malformed
+metadata. The Agent must fetch and judge the candidate.
 
 ## Fetch and Browser Fallback
 
@@ -815,7 +850,7 @@ Search results are discovery, not proof. Check:
 
 1. `search.result` events for candidate URLs and provider outcomes;
 2. `fetch.result` events for successful page content;
-3. finish `evidenceUrls` and finding-level evidence bindings;
+3. finish-level derived `evidenceUrls` and finding-level evidence bindings;
 4. `answerStatus`, `answerReason`, `validatedEvidenceCount`, and
    `confirmedFindingCount` in `report.json`.
 
@@ -834,7 +869,10 @@ into a successful evidence claim.
 
 These outcomes are intentionally different:
 
-- `success_empty`: request and parser completed, no usable records;
+- `success_empty`: request and parser completed, no usable records. For Generic
+  Fetch, this outcome also covers a short shell, challenge page, or otherwise
+  weak extraction; the raw content and extraction warnings remain available for
+  diagnosis but are not treated as evidence;
 - `http_error`: provider returned an HTTP/blocking failure or CAPTCHA signal;
 - `timeout`: provider exceeded its bounded request or Auto deadline;
 - `transport_error`: network, parser, or provider execution failure;

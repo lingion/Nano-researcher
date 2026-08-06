@@ -65,6 +65,52 @@ test('runs with an OpenAI-compatible provider that explicitly supports tool call
   assert.equal(gatewayCalls, 1);
 });
 
+test('recovers when an OpenAI-compatible gateway temporarily omits the forced decision tool', async () => {
+  let gatewayCalls = 0;
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const llm = new OpenAiCompatibleProvider({
+    baseUrl: 'https://gateway.test/v1',
+    apiKey: 'test-key',
+    model: 'test-model',
+    responseFormatMode: 'tool_call',
+    maxAttempts: 1,
+    retryDelayMs: 0,
+    fetchImpl: async () => {
+      gatewayCalls += 1;
+      if (gatewayCalls === 1) {
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: 'I will continue researching.' }, finish_reason: 'stop' }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            tool_calls: [{
+              function: {
+                name: 'submit_research_decision',
+                arguments: decisionJson({ decision: 'finish', searchActions: [], fetchActions: [], uncertainties: [], finalAnswer: 'recovered' }),
+              },
+            }],
+          },
+          finish_reason: 'tool_calls',
+        }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+
+  const result = await runResearchAgent({ question: 'recover tool contract', options: { maxIterations: 1 } }, {
+    llm,
+    search: { name: 'fake', search: async () => { throw new Error('must not search'); } },
+    fetch: { name: 'fake', fetch: async () => { throw new Error('must not fetch'); } },
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.finalAnswer, 'recovered');
+  assert.equal(gatewayCalls, 2);
+  assert.equal(events.find((event) => event.type === 'agent.protocol_error')?.payload.code, 'INVALID_TOOL_CALL');
+});
+
 test('runs a generic search, fetch, and finish sequence', async () => {
   const outputs = [
     decisionJson({ decision: 'search', searchActions: [{ query: 'example fact' }], fetchActions: [], uncertainties: [], finalAnswer: null }),
@@ -96,6 +142,120 @@ test('requests the native decision tool instead of using text JSON as the primar
   assert.match(requestedMessages[0]!.content, /untrusted data/);
   assert.equal(JSON.parse(requestedMessages[1]!.content).task.question, 'x');
   assert.equal(JSON.parse(requestedMessages[2]!.content).dataClassification, 'untrusted_tool_data');
+});
+
+test('passes Auto ranking provenance to the agent when choosing fetch candidates', async () => {
+  const prompts: string[] = [];
+  const systemPrompts: string[] = [];
+  const outputs = [
+    decisionJson({ decision: 'search', searchActions: [{ query: 'specific preview' }], fetchActions: [], uncertainties: [], finalAnswer: null }),
+    decisionJson({ decision: 'finish', searchActions: [], fetchActions: [], uncertainties: [], finalAnswer: 'done' }),
+  ];
+  await runResearchAgent({ question: 'Find the specific preview', options: { maxIterations: 2 } }, {
+    llm: { complete: async ({ messages }) => { prompts.push(messages.at(-1)!.content); systemPrompts.push(messages[0]!.content); return { text: outputs.shift()! }; } },
+    search: {
+      name: 'search-auto',
+      search: async (query) => ({
+        outcome: 'success_with_content', provider: 'search-auto', durationMs: 1, retryCount: 0,
+        results: [{
+          query,
+          title: 'Specific preview announcement',
+          url: 'https://official.example.com/preview',
+          snippet: 'Preview details',
+          provider: 'bing',
+          rank: 1,
+          providerRank: 1,
+          sourceFamily: 'general-web',
+          resultType: 'web',
+          displayUrl: 'https://official.example.com/preview',
+          publishedAt: '2026-08-01T00:00:00.000Z',
+          score: 18.5,
+          scoreBreakdown: { lexical: 12, phrase: 4, coverage: 1.5, authority: 1 },
+          metadata: { fusion: { rrfK: 60, rrfScore: 0.03, providerCount: 2, providerRanks: { bing: 1, sogou: 2 } } },
+        }],
+      }),
+    },
+    fetch: { name: 'fake-fetch', fetch: async () => { throw new Error('must not fetch'); } },
+  });
+
+  const context = JSON.parse(prompts[1]!);
+  assert.equal(context.searchResults[0].ranking.score, 18.5);
+  assert.equal(context.searchResults[0].ranking.scoreBreakdown.phrase, 4);
+  assert.equal(context.searchResults[0].ranking.fusion.providerCount, 2);
+  assert.equal(context.searchResults[0].sourceFamily, 'general-web');
+  assert.equal(context.searchResults[0].resultType, 'web');
+  assert.equal(context.searchResults[0].publishedAt, '2026-08-01T00:00:00.000Z');
+  assert.match(systemPrompts[1]!, /Search results and snippets are discovery data, not fetched evidence/);
+  assert.match(systemPrompts[1]!, /transport or extraction fact, not evidence/);
+  assert.doesNotMatch(systemPrompts[1]!, /preview|rollout|sibling platform|date windows|geography|audience|event type/i);
+});
+
+test('keeps the Generic prompt domain-neutral', async () => {
+  let systemPrompt = '';
+  await runResearchAgent({ question: 'Find source-backed facts', options: { maxIterations: 1 } }, {
+    llm: {
+      complete: async ({ messages }) => {
+        systemPrompt = messages[0]?.content ?? '';
+        return { text: decisionJson({ decision: 'finish', searchActions: [], fetchActions: [], uncertainties: [], finalAnswer: 'done' }) };
+      },
+    },
+    search: { name: 'fake', search: async () => { throw new Error('must not search'); } },
+    fetch: { name: 'fake', fetch: async () => { throw new Error('must not fetch'); } },
+  });
+
+  assert.doesNotMatch(systemPrompt, /preview|rollout|sibling platform|date windows|geography|audience|event type/i);
+});
+
+test('keeps the newest search batch visible when the search context budget is full', async () => {
+  const prompts: string[] = [];
+  const initialQueries = Array.from({ length: 8 }, (_value, index) => `old-query-${index}`);
+  const outputs = [
+    decisionJson({
+      decision: 'search',
+      searchActions: initialQueries.map((query) => ({ query })),
+      fetchActions: [],
+      uncertainties: [],
+      finalAnswer: null,
+    }),
+    decisionJson({
+      decision: 'search',
+      searchActions: [{ query: 'new-query' }],
+      fetchActions: [],
+      uncertainties: [],
+      finalAnswer: null,
+    }),
+    decisionJson({ decision: 'finish', searchActions: [], fetchActions: [], uncertainties: [], finalAnswer: 'done' }),
+  ];
+
+  const result = await runResearchAgent({ question: 'Keep current search candidates visible', options: { maxIterations: 3 } }, {
+    llm: {
+      complete: async ({ messages }) => {
+        prompts.push(messages.at(-1)!.content);
+        return { text: outputs.shift()! };
+      },
+    },
+    search: {
+      name: 'fake-search',
+      search: async (query) => ({
+        outcome: 'success_with_content',
+        provider: 'fake-search',
+        results: [{
+          query,
+          title: `${query} candidate`,
+          url: query === 'new-query' ? 'https://example.com/newest-candidate' : `https://example.com/${query}`,
+          snippet: 'x'.repeat(1_200),
+          provider: 'fake-search',
+        }],
+        durationMs: 1,
+        retryCount: 0,
+      }),
+    },
+    fetch: { name: 'fake-fetch', fetch: async () => { throw new Error('must not fetch'); } },
+  });
+
+  const contextAfterNewSearch = JSON.parse(prompts[2]!);
+  assert.ok(contextAfterNewSearch.searchResults.some((result: { url: string }) => result.url === 'https://example.com/newest-candidate'));
+  assert.equal(result.status, 'completed');
 });
 
 test('reports repeated malformed model output as protocol failure', async () => {
@@ -308,6 +468,40 @@ test('keeps all sixteen fetched-page records visible with explicit truncation me
   assert.ok(context.fetchedPages.every((page: Record<string, unknown>) => page.contentLength === 6000 && page.contentTruncatedForContext === true && page.renderMode === 'static'));
 });
 
+test('keeps mid-page evidence visible when many fetched pages share the context budget', async () => {
+  const prompts: string[] = [];
+  const urls = Array.from({ length: 16 }, (_, index) => `https://example.com/evidence-${index}`);
+  const outputs = [
+    decisionJson({ decision: 'fetch', searchActions: [], fetchActions: urls.slice(0, 8).map((url) => ({ url })), uncertainties: [], finalAnswer: null }),
+    decisionJson({ decision: 'fetch', searchActions: [], fetchActions: urls.slice(8).map((url) => ({ url })), uncertainties: [], finalAnswer: null }),
+    decisionJson({ decision: 'review', searchActions: [], fetchActions: [], uncertainties: [], finalAnswer: null }),
+  ];
+
+  await runResearchAgent({ question: 'preserve evidence details', options: { maxIterations: 3 } }, {
+    llm: { complete: async ({ messages }) => { prompts.push(messages.at(-1)!.content); return { text: outputs.shift()! }; } },
+    search: { name: 'fake', search: async () => { throw new Error('must not search'); } },
+    fetch: {
+      name: 'fake-fetch',
+      fetch: async (url) => ({
+        outcome: 'success_with_content',
+        requestedUrl: url,
+        finalUrl: url,
+        title: 'Evidence page',
+        content: `${'preamble '.repeat(120)}EVIDENCE_MARKER_${url.split('-').at(-1)}`,
+        contentLength: 1200,
+        truncated: false,
+        provider: 'fake-fetch',
+        extractionWarnings: [],
+        durationMs: 1,
+        retryCount: 0,
+      }),
+    },
+  });
+
+  const context = JSON.parse(prompts[2]!);
+  assert.ok(context.fetchedPages.every((page: { content: string }) => page.content.includes('EVIDENCE_MARKER_')));
+});
+
 test('bounds accumulated uncertainties and reports what was omitted', async () => {
   const prompts: string[] = [];
   const longUncertainties = Array.from({ length: 16 }, (_, index) => `${index}-${'x'.repeat(490)}`);
@@ -343,6 +537,28 @@ test('shows the agent previously executed fetch URLs so it can avoid action loop
   assert.equal(context.actionHistory.fetchActionCount, 1);
   assert.equal(context.actionHistory.uniqueFetchUrlCount, 1);
   assert.match(prompts[1]!, /Set retry=true only when deliberately repeating an exact action already listed in actionHistory/);
+  assert.doesNotMatch(prompts[1]!, /incomplete finish|target result|preview|rollout/i);
+});
+
+test('rejects a repeated review that has no new search or fetch evidence', async () => {
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const prompts: string[] = [];
+  const outputs = [
+    decisionJson({ decision: 'review', searchActions: [], fetchActions: [], uncertainties: [], finalAnswer: null }),
+    decisionJson({ decision: 'review', searchActions: [], fetchActions: [], uncertainties: [], finalAnswer: null }),
+    decisionJson({ decision: 'finish', searchActions: [], fetchActions: [], uncertainties: ['no additional evidence'], finalAnswer: 'partial' }),
+  ];
+  const result = await runResearchAgent({ question: 'bounded review', options: { completionMode: 'target_results', targetResultCount: 2, maxIterations: 3 } }, {
+    llm: { complete: async ({ messages }) => { prompts.push(messages[0]!.content); return { text: outputs.shift()! }; } },
+    search: { name: 'fake', search: async () => { throw new Error('must not search'); } },
+    fetch: { name: 'fake', fetch: async () => { throw new Error('must not fetch'); } },
+    onEvent: (event) => events.push(event),
+  });
+
+  assert.equal(result.status, 'interrupted');
+  assert.equal(result.state.interrupted?.reason, 'completion_not_reached');
+  assert.equal(events.find((event) => event.type === 'agent.protocol_error')?.payload.code, 'NO_PROGRESS_REVIEW');
+  assert.match(prompts[2]!, /A review without new search or fetch evidence cannot be repeated/);
 });
 
 test('rejects a cross-turn duplicate action unless the agent explicitly marks it as a retry', async () => {
@@ -369,6 +585,35 @@ test('rejects a cross-turn duplicate action unless the agent explicitly marks it
 
   assert.deepEqual(fetches, ['https://example.com/evidence']);
   assert.equal(events.find((event) => event.type === 'agent.protocol_error')?.payload.code, 'RETRY_REQUIRED');
+});
+
+test('explains the bounded retry correction after a duplicate action protocol error', async () => {
+  const prompts: string[] = [];
+  const fetches: string[] = [];
+  const url = 'https://example.com/evidence';
+  const outputs = [
+    decisionJson({ decision: 'fetch', searchActions: [], fetchActions: [{ url }], uncertainties: [], finalAnswer: null }),
+    decisionJson({ decision: 'fetch', searchActions: [], fetchActions: [{ url }], uncertainties: [], finalAnswer: null }),
+    decisionJson({ decision: 'fetch', searchActions: [], fetchActions: [{ url, retry: true }], uncertainties: ['retry after weak extraction'], finalAnswer: null }),
+    decisionJson({ decision: 'finish', searchActions: [], fetchActions: [], uncertainties: [], finalAnswer: 'done' }),
+  ];
+
+  const result = await runResearchAgent({ question: 'recover duplicate action', options: { maxIterations: 3 } }, {
+    llm: { complete: async ({ messages }) => { prompts.push(messages[0]!.content); return { text: outputs.shift()! }; } },
+    search: { name: 'fake', search: async () => { throw new Error('must not search'); } },
+    fetch: {
+      name: 'fake',
+      fetch: async (requestedUrl) => {
+        fetches.push(requestedUrl);
+        return { outcome: 'success_with_content', requestedUrl, finalUrl: requestedUrl, title: 'Evidence', content: 'proof', provider: 'fake', extractionWarnings: [], durationMs: 1, retryCount: 0 };
+      },
+    },
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(fetches, [url, url]);
+  assert.match(prompts[2]!, /choose a URL not listed in actionHistory with retry=false/);
+  assert.match(prompts[2]!, /keep the same URL only with retry=true/);
 });
 
 test('executes an intentional bounded retry and exposes retry intent in action history', async () => {
@@ -649,7 +894,7 @@ test('completes a ten-result target only with ten evidence-bound findings and te
   assert.equal(result.decision.findings?.length, 10);
 });
 
-test('bounds repeated incomplete finish decisions and preserves the partial answer', async () => {
+test('stops at an incomplete finish and preserves the partial answer', async () => {
   let calls = 0;
   const result = await runResearchAgent({ question: 'avoid a no-progress finish loop', options: { completionMode: 'target_results', targetResultCount: 10, maxIterations: 100 } }, {
     llm: { complete: async () => {
@@ -659,11 +904,11 @@ test('bounds repeated incomplete finish decisions and preserves the partial answ
     search: { name: 'fake', search: async () => { throw new Error('must not search'); } },
     fetch: { name: 'fake', fetch: async () => { throw new Error('must not fetch'); } },
   });
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
   assert.equal(result.status, 'interrupted');
   assert.equal(result.state.interrupted?.reason, 'completion_not_reached');
   assert.equal(result.state.finalAnswer, 'Only a partial result is available.');
-  assert.equal(result.state.decisions.length, 2);
+  assert.equal(result.state.decisions.length, 1);
 });
 
 test('target-results mode counts only agent-classified confirmed findings', async () => {
@@ -680,7 +925,7 @@ test('target-results mode counts only agent-classified confirmed findings', asyn
     search: { name: 'fake', search: async () => { throw new Error('must not search'); } },
     fetch: { name: 'fake', fetch: async () => { throw new Error('must not fetch'); } },
   });
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
   assert.equal(result.status, 'interrupted');
   assert.equal(result.state.interrupted?.reason, 'completion_not_reached');
   assert.match(result.state.interrupted?.message ?? '', /1\/2 confirmed findings/);

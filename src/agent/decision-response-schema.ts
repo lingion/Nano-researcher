@@ -51,7 +51,7 @@ export const researchDecisionParameters: Record<string, unknown> = {
     fetchActions: { type: 'array', maxItems: 8, items: fetchActionSchema },
     uncertainties: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 500 } },
     finalAnswer: { type: ['string', 'null'], maxLength: 12_000 },
-    evidenceUrls: { type: 'array', maxItems: 100, items: { type: 'string', minLength: 1, maxLength: 2_048 } },
+    evidenceUrls: { type: 'array', maxItems: 100, description: 'Compatibility field. For finish, the runtime derives final evidenceUrls from finding-level citations; submit an empty array.', items: { type: 'string', minLength: 1, maxLength: 2_048 } },
     findings: { type: 'array', maxItems: 100, items: findingSchema },
   },
 };

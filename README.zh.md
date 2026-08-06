@@ -228,6 +228,10 @@ submit_research_decision
 通道。网关如果忽略 tool-call，会产生 `LLM_INVALID_RESPONSE` 或协议诊断，而不是让 runtime
 猜测这段文本想做什么。
 
+Provider 会先在传输层执行有界重试。重试耗尽后，如果确认是缺少或错误的 tool-call，会返回
+`protocolError: INVALID_TOOL_CALL`，交给 Agent 做有界的协议恢复请求。runtime 不会猜测自由
+文本的业务含义；HTTP、网络、超时和非法 envelope 仍保持 provider error 语义。
+
 ### 4. 严格解析模型决策
 
 `src/agent/decision-protocol.ts` 会拒绝：
@@ -241,7 +245,7 @@ submit_research_decision
 - `search` 混入 fetch，`fetch` 混入 search；
 - `review`/`finish` 携带 action；
 - finding disposition 不在三个允许值中；
-- finding evidence 与 finish 顶层 `evidenceUrls` 不一致。
+- finding evidence URL 格式非法或使用不安全协议。
 
 每个 action 必须显式携带 boolean `retry`。同一个 query 或 URL 再次出现时必须写
 `retry: true`，完全相同的 action 总尝试次数最多 3 次。协议恢复最多 2 次；不会为每一种
@@ -262,6 +266,11 @@ submit_research_decision
 为了防止 prompt 无限膨胀，搜索结果、抓取内容、action history 和 uncertainty 都有字符
 预算。这个截断是传输保护，不是隐藏的候选相关性判断；模型仍然负责候选选择和 finding 判断。
 
+Agent prompt 只要求每个 finding 绑定模型提交的 claim、disposition 和已抓取的 evidence URL。
+它不规定某个领域的 target 单位，也不会按发布、项目、受众或日期自动合并页面；语义分组仍由
+模型在 Fetch 后自行判断。`transport_error` 和 `success_empty` 是工具结果状态，不是证据。
+这些是面向模型的传输与证据指令，不是自动真伪分类器。
+
 ### 6. 处理完成条件
 
 | 模式 | 完成条件 |
@@ -273,9 +282,14 @@ submit_research_decision
 没有已抓取且被 finish 引用的证据，finish 不能被标记为 completed。搜索 discovery 永远
 不能直接算作 fetched evidence。
 
-最大轮次硬上限是 100。模型提交不完整 finish 时最多得到一次有界 review 机会；连续两次
-不完整 finish 且没有新 action，会以 `completion_not_reached` 中断。达到上限时保留部分答案
-和 uncertainty，返回诚实的 `interrupted`，不伪造 completed。
+目标数量是用户要求的目标，不是允许无限搜索的理由。模型提交不完整 finish 时，系统会保留
+部分答案、findings 和 uncertainty，以 `completion_not_reached` 返回诚实的
+`interrupted`；不会伪造成 `completed`。最大轮次仍硬限制为 100；如果模型始终没有提交
+finish，达到硬 deadline 时同样保留当前部分状态。
+
+在 search 或 fetch 之后，如果目标仍未达到，模型必须先提交一次有界的 `review` 决策，
+再决定是否不完整 finish。review 必须二选一：指出具体证据缺口并继续 search/fetch，
+或记录明确 blockers 后诚实 finish；没有新证据时不得重复 review。
 
 ## 四、LLM 决策协议
 
@@ -308,8 +322,9 @@ submit_research_decision
 }
 ```
 
-Runtime 会验证所有 finding 的 evidence URL 并集与 finish 顶层 `evidenceUrls` 完全相等，
-防止报告宣称一组实际上没有绑定到任何 finding 的证据。
+Finding-level evidence URL 是唯一绑定事实。Runtime 会验证每个 finding 的证据并集，
+再从该并集派生 finish 的 `evidenceUrls`。顶层字段为了兼容保留，模型应提交 `[]`；
+Runtime 不再把两份由模型重复生成的长 URL 逐字比较，因此复制漂移不会再制造协议错误。
 
 ### LLM 传输实现
 
@@ -397,16 +412,24 @@ Provider HTTP helper 使用稳定的桌面 UA 和 Android UA，不做随机指�
 1. 只接受 HTTP(S) URL，去 fragment、常见 tracking 参数和末尾 slash；
 2. 丢弃非法 URL、没有解析的百度/搜狗/Bing wrapper URL；
 3. 丢弃 title 和 snippet 都为空的记录；
-4. 按 canonical URL 去重；
+4. 按 canonical URL 分组，同一 URL 的多 Provider 记录合并，不删除不同 URL；
 5. 执行 query 约束，包括短语、必需/排除词、`site:`、`domain:`、`filetype:`、
    `source:`、`type:`、`after:` 和 `before:`；
 6. 计算 title/snippet/URL lexical BM25-style 分数、phrase 分数、token coverage、声明的
-   authority score、Provider rank prior、小权重 reciprocal-rank fusion prior，以及在 query
-   表达最新意图时的 freshness 分数；
-7. 再按相似标题去重，按 score 降序、URL 升序稳定排序。
+   authority score，以及 query 表达最新意图时的 freshness 分数；canonical URL 分组后再
+   加入标准 reciprocal-rank fusion 分数，把跨 Provider 的重复发现作为显式协同信号，而
+   不是替代文本相关性；
+7. 按融合后的 score 降序、基础相关性分数降序、URL 升序稳定排序。
 
-返回结果保留 `scoreBreakdown` 和 rejection counters，便于诊断。该排序器不会推导官方性，
-不会判断一个页面是否证明了问题，也不会替模型决定候选。
+不同 URL 即使标题相似也会保留。语义重复或事实重复要等 Agent Fetch 后读取页面正文和引用
+再判断。Provider rank、resolved/display URL provenance、发布日期、更新日期和未解析 wrapper
+标记都会保留在归一化结果与 fusion diagnostics 中。
+
+返回结果保留 `scoreBreakdown` 和 `autoDiagnostics.candidateQuality`，便于诊断。
+`candidateQuality` 只报告输入数、去重后数量、输出数、各类淘汰数和 Provider 显式提供的
+source provenance 数量。这些都是传输与排序事实；排序器不会推导官方性，不会判断一个页面
+是否证明了问题，也不会替模型决定候选。Provider 只能显式提供 `sourceProvenance`；producer
+boundary 会清理合法字段并丢弃格式非法的 metadata，不会从 URL、域名或 Provider 名称推断。
 
 ## 六、Fetch 与浏览器回退
 
@@ -776,7 +799,7 @@ Generic composition 没拿到两个必填变量。检查启动 `pnpm start`、`p
 
 1. `search.result`：是否拿到了候选 URL，Provider 是成功、空结果还是被阻断；
 2. `fetch.result`：是否真的有 `success_with_content`；
-3. finish 的 `evidenceUrls` 和 finding 的 evidence binding；
+3. finish 派生出的 `evidenceUrls` 和 finding 的 evidence binding；
 4. `report.json` 的 `answerStatus`、`answerReason`、`validatedEvidenceCount` 和
    `confirmedFindingCount`。
 
@@ -797,7 +820,9 @@ pnpm install:browsers
 
 这些状态含义不同：
 
-- `success_empty`：请求和 parser 正常完成，但没有可用记录；
+- `success_empty`：请求和 parser 正常完成，但没有可用记录。Generic Fetch 遇到短壳页面、
+  验证码/挑战页或其他弱提取时也使用这个 outcome；原始正文和 extraction warnings 仍保留
+  供诊断，但不会被当成证据；
 - `http_error`：HTTP 错误、验证码或 Provider block；
 - `timeout`：Provider request 或 Auto deadline 超时；
 - `transport_error`：网络、parser 或 Provider 执行失败；

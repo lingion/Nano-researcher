@@ -36,7 +36,7 @@ export interface GenericReport {
   answer?: unknown;
   sources: Array<{ title: string; url: string; provider: string; snippet: string }>;
   discoveredCandidates: Array<{ title: string; url: string; provider: string; snippet: string }>;
-  fetchedPages: Array<{ title: string; requestedUrl: string; finalUrl: string; provider: string; outcome: string; contentType?: string; contentLength?: number; truncated?: boolean; renderMode?: string; durationMs: number; retryCount: number; extractionWarnings: string[] }>;
+  fetchedPages: Array<{ title: string; requestedUrl: string; finalUrl: string; provider: string; outcome: string; statusCode?: number; contentType?: string; contentLength?: number; truncated?: boolean; renderMode?: string; durationMs: number; retryCount: number; extractionWarnings: string[] }>;
   events: RunEvent[];
 }
 
@@ -109,6 +109,7 @@ export function buildGenericReport(runId: string, status: string, result: AgentR
       finalUrl: page.finalUrl,
       provider: page.provider,
       outcome: page.outcome,
+      ...(page.statusCode !== undefined ? { statusCode: page.statusCode } : {}),
       ...(page.contentType ? { contentType: page.contentType } : {}),
       ...(page.contentLength !== undefined ? { contentLength: page.contentLength } : {}),
       ...(page.truncated !== undefined ? { truncated: page.truncated } : {}),

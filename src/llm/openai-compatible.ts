@@ -12,7 +12,24 @@ const DEFAULT_MAX_RETRY_AFTER_MS = 30_000;
 const MAX_RETRY_AFTER_MS = 120_000;
 const MAX_ERROR_SUMMARY_CHARS = 500;
 
-class RetryableLlmTransportError extends LlmProviderError {}
+class RetryableLlmTransportError extends LlmProviderError {
+  readonly protocolError?: { code: string; message: string };
+  readonly toolCallCount?: number;
+  readonly finishReason?: string;
+
+  constructor(
+    code: ConstructorParameters<typeof LlmProviderError>[0],
+    message: string,
+    httpStatus?: number,
+    details: ConstructorParameters<typeof LlmProviderError>[3] = {},
+    contract?: { code: string; message: string; toolCallCount: number; finishReason?: string },
+  ) {
+    super(code, message, httpStatus, details);
+    this.protocolError = contract ? { code: contract.code, message: contract.message } : undefined;
+    this.toolCallCount = contract?.toolCallCount;
+    this.finishReason = contract?.finishReason;
+  }
+}
 class LlmHttpError extends LlmProviderError {
   constructor(readonly status: number, details: { requestId?: string; errorSummary?: string; retryAfterMs?: number } = {}) {
     super('LLM_HTTP_ERROR', `LLM HTTP ${status}${details.errorSummary ? `: ${details.errorSummary}` : ''}`, status, details);
@@ -217,14 +234,19 @@ export class OpenAiCompatibleProvider implements LlmProvider {
         }
         const toolCalls = Array.isArray(choice.message.tool_calls) ? choice.message.tool_calls as Array<{ function?: { name?: unknown; arguments?: unknown } }> : [];
         if (useToolCall && (toolCalls.length !== 1 || toolCalls[0]?.function?.name !== input.responseTool?.name || typeof toolCalls[0]?.function?.arguments !== 'string')) {
+          const finishReason = choice.finish_reason !== undefined || choice.stop_reason !== undefined
+            ? String(choice.finish_reason ?? choice.stop_reason)
+            : undefined;
+          const contractMessage = `Expected exactly one ${input.responseTool?.name} tool call; received ${toolCalls.length}.`;
           throw new RetryableLlmTransportError(
             'LLM_INVALID_RESPONSE',
             `LLM ignored the forced ${input.responseTool?.name} tool contract.`,
             response.status,
             {
               ...(requestId ? { requestId } : {}),
-              errorSummary: `Expected exactly one ${input.responseTool?.name} tool call; received ${toolCalls.length}.`,
+              errorSummary: contractMessage,
             },
+            { code: 'INVALID_TOOL_CALL', message: contractMessage, toolCallCount: toolCalls.length, ...(finishReason ? { finishReason } : {}) },
           );
         }
         const text = useToolCall ? toolCalls[0]!.function!.arguments as string : choice.message.content;
@@ -281,6 +303,19 @@ export class OpenAiCompatibleProvider implements LlmProvider {
         });
         if (!retryable || attempt >= maxAttempts) {
           error.transportAttempts = attempt;
+          if (error instanceof RetryableLlmTransportError && error.protocolError) {
+            return {
+              text: '',
+              model: this.options.model,
+              transportAttempts: attempt,
+              structuredOutputMode: 'tool_call',
+              ...(error.toolCallCount !== undefined ? { toolCallCount: error.toolCallCount } : {}),
+              ...(error.finishReason ? { finishReason: error.finishReason } : {}),
+              ...(error.requestId ? { requestId: error.requestId } : {}),
+              ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
+              protocolError: error.protocolError,
+            };
+          }
           throw error;
         }
         lastError = error;

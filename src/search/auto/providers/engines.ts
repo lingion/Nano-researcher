@@ -1,6 +1,7 @@
 import type { SearchResponse } from '../../../agent/types.ts';
 import type { EngineContext } from '../contracts.ts';
 import { SearchResponseEngine } from '../engine-runner.ts';
+import { normalizeSourceProvenance } from './result.js';
 
 import { searchBing } from './bing.js';
 import { searchBaidu } from './baidu.js';
@@ -56,21 +57,31 @@ export function normalizeResponse(value: RawProviderResponse | undefined, query:
   value = value ?? {};
   const rawRecords = value.records;
   const records = Array.isArray(rawRecords) ? rawRecords : [];
-  const normalizedResults = records.map((record, index) => ({
-    query,
-    title: String(record.title ?? record.url ?? 'Untitled result'),
-    url: String(record.url ?? ''),
-    snippet: String(record.snippet ?? ''),
-    provider: String(record.provider ?? provider),
-    rank: finiteNumber(record.rank) ?? index + 1,
-    providerRank: finiteNumber(record.providerRank) ?? finiteNumber(record.rank) ?? index + 1,
-    ...(typeof record.sourceFamily === 'string' ? { sourceFamily: record.sourceFamily } : {}),
-    ...(typeof record.resultType === 'string' ? { resultType: record.resultType } : {}),
-    metadata: {
-      ...(record.score === undefined ? {} : { score: record.score }),
-      ...(record.metadata && typeof record.metadata === 'object' ? record.metadata as Record<string, unknown> : {}),
-    },
-  })).filter((item) => item.url);
+  const normalizedResults = records.map((record, index) => {
+    const sourceProvenance = normalizeSourceProvenance(record.sourceProvenance);
+    return {
+      query,
+      title: String(record.title ?? record.url ?? 'Untitled result'),
+      url: String(record.url ?? ''),
+      snippet: String(record.snippet ?? ''),
+      provider: String(record.provider ?? provider),
+      rank: finiteNumber(record.rank) ?? index + 1,
+      providerRank: finiteNumber(record.providerRank) ?? finiteNumber(record.rank) ?? index + 1,
+      ...(typeof record.sourceFamily === 'string' ? { sourceFamily: record.sourceFamily } : {}),
+      ...(typeof record.resultType === 'string' ? { resultType: record.resultType } : {}),
+      ...(finiteNumber(record.authorityScore) !== undefined ? { authorityScore: finiteNumber(record.authorityScore) } : {}),
+      ...(sourceProvenance ? { sourceProvenance } : {}),
+      ...(typeof record.displayUrl === 'string' ? { displayUrl: record.displayUrl } : {}),
+      ...(typeof record.resolvedUrl === 'string' ? { resolvedUrl: record.resolvedUrl } : {}),
+      ...(typeof record.publishedAt === 'string' ? { publishedAt: record.publishedAt } : {}),
+      ...(typeof record.updatedAt === 'string' ? { updatedAt: record.updatedAt } : {}),
+      ...(record.unresolvedWrapper === true ? { unresolvedWrapper: true } : {}),
+      metadata: {
+        ...(record.score === undefined ? {} : { score: record.score }),
+        ...(record.metadata && typeof record.metadata === 'object' ? record.metadata as Record<string, unknown> : {}),
+      },
+    };
+  }).filter((item) => item.url);
   const rawDiagnostics = value.diagnostics ?? {};
   const explicitError = value.error ?? asError(rawDiagnostics.error);
   const parserError = !normalizedResults.length && (records.length > 0 || rawRecords !== undefined && !Array.isArray(rawRecords))

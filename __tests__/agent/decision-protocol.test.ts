@@ -171,7 +171,7 @@ test('accepts only an explicit boolean retry marker on actions', () => {
   if (!invalidRetry.ok) assert.equal(invalidRetry.error.code, 'INVALID_RETRY');
 });
 
-test('requires every final finding to bind evidence and keeps the top-level evidence set consistent', () => {
+test('requires every final finding to bind evidence and derives the top-level evidence set', () => {
   const valid = parseAgentDecision(JSON.stringify(envelope({
     decision: 'finish',
     finalAnswer: 'two supported facts',
@@ -183,14 +183,14 @@ test('requires every final finding to bind evidence and keeps the top-level evid
   })));
   assert.equal(valid.ok, true);
 
-  const mismatch = parseAgentDecision(JSON.stringify(envelope({
+  const copiedUrlDrift = parseAgentDecision(JSON.stringify(envelope({
     decision: 'finish',
     finalAnswer: 'unsupported mapping',
-    evidenceUrls: ['https://example.com/a'],
-    findings: [{ id: 'a', claim: 'fact a', disposition: 'confirmed', evidenceUrls: ['https://example.com/b'] }],
+    evidenceUrls: ['https://example.com/a?long=top-level-copy'],
+    findings: [{ id: 'a', claim: 'fact a', disposition: 'confirmed', evidenceUrls: ['https://example.com/a?long=finding-copy'] }],
   })));
-  assert.equal(mismatch.ok, false);
-  if (!mismatch.ok) assert.equal(mismatch.error.code, 'EVIDENCE_BINDING_MISMATCH');
+  assert.equal(copiedUrlDrift.ok, true);
+  if (copiedUrlDrift.ok) assert.deepEqual(copiedUrlDrift.decision.evidenceUrls, ['https://example.com/a?long=finding-copy']);
 });
 
 test('requires the agent to classify every finding with a generic disposition', () => {

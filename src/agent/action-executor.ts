@@ -135,6 +135,7 @@ export async function executeAgentActions(
       finalUrl: response.finalUrl,
       provider: response.provider,
       outcome: response.outcome,
+      ...(response.statusCode !== undefined ? { statusCode: response.statusCode } : {}),
       ...(response.contentType ? { contentType: response.contentType } : {}),
       contentLength: response.contentLength ?? response.content.length,
       truncated: response.truncated === true,

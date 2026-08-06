@@ -66,10 +66,14 @@ export class AutoSearchProvider {
         durationMs: Date.now() - started,
         uniqueResultCount: ranked.results.length,
         duplicateResultCount: ranked.rejected.duplicate,
-        filteredResultCount: ranked.rejected.invalid + ranked.rejected.wrapper + ranked.rejected.quality + ranked.rejected.constraint,
+        filteredResultCount: ranked.rejected.invalid + ranked.rejected.wrapper + ranked.rejected.quality + ranked.rejected.constraint + ranked.rejected.relevance,
         outputLimitedCount: Math.max(0, ranked.results.length - results.length),
         successfulEngineCount: engineResults.filter((item) => item.outcome === 'success_with_content').length,
         blockedEngineCount: engineResults.filter((item) => item.details?.blocked === true || item.error?.code === 'CAPTCHA' || item.error?.code === 'PROVIDER_BLOCKED').length,
+        candidateQuality: {
+          ...ranked.candidateQuality,
+          outputResultCount: results.length,
+        },
       };
       let outcome: SearchResponse['outcome'];
       let error: SearchResponse['error'];
@@ -104,6 +108,7 @@ export class AutoSearchProvider {
           outputLimitedCount: diagnostics.outputLimitedCount,
           successfulEngineCount: diagnostics.successfulEngineCount,
           blockedEngineCount: diagnostics.blockedEngineCount,
+          candidateQuality: diagnostics.candidateQuality,
         },
       };
     } finally {
@@ -226,6 +231,21 @@ function cancelledResponse(durationMs: number): SearchResponse {
       outputLimitedCount: 0,
       successfulEngineCount: 0,
       blockedEngineCount: 0,
+      candidateQuality: {
+        inputCount: 0,
+        uniqueResultCount: 0,
+        outputResultCount: 0,
+        rejectionCounts: {
+          invalidUrl: 0,
+          unresolvedWrapper: 0,
+          missingText: 0,
+          queryConstraint: 0,
+          lowRelevance: 0,
+          duplicateUrl: 0,
+        },
+        inputExplicitProvenanceCount: 0,
+        uniqueExplicitProvenanceCount: 0,
+      },
     },
   };
 }
