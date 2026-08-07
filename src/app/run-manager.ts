@@ -4,6 +4,7 @@ import path from 'node:path';
 import { runAgent } from './run-agent.ts';
 import type { ResearchAgentDependencies } from '../agent/agent-loop.ts';
 import type { AgentResult, ResearchTask } from '../agent/types.ts';
+import type { DomainResolver } from '../domain/resolver.ts';
 import { buildGenericReport, writeGenericReport } from '../artifacts/generic-report.ts';
 import type { EvidenceStore } from '../evidence/types.ts';
 import { FileEvidenceStore } from '../evidence/file-store.ts';
@@ -51,6 +52,7 @@ export class ResearchRunManager {
     private readonly evidenceRoot?: string,
     private readonly reportWriter: typeof writeGenericReport = writeGenericReport,
     private readonly runTimeoutMs = DEFAULT_RESEARCH_RUN_TIMEOUT_MS,
+    private readonly domainResolver?: DomainResolver,
   ) {}
 
   async hydrate(): Promise<void> {
@@ -131,7 +133,7 @@ export class ResearchRunManager {
           ...this.dependencies,
           evidenceStore,
           onEvent: (event) => this.emit(run, event.type, event.payload),
-        }, { signal: deadline.signal, evidenceStore });
+        }, { signal: deadline.signal, evidenceStore, ...(this.domainResolver ? { domainResolver: this.domainResolver } : {}) });
         terminalStatus = this.isCancellationRequested(run)
           ? 'cancelled'
           : result.status === 'completed' ? 'completed' : result.status === 'interrupted' ? 'interrupted' : 'failed';

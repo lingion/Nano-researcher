@@ -5,6 +5,7 @@ import path from 'node:path';
 import { runAgent } from '../../app/run-agent.ts';
 import type { ResearchAgentDependencies } from '../../agent/agent-loop.ts';
 import type { ResearchTask } from '../../agent/types.ts';
+import type { DomainResolver } from '../../domain/resolver.ts';
 import type { ResearchRunManager } from '../../app/run-manager.ts';
 import type { ResearchRun } from '../../app/run-manager.ts';
 import { monitorPage } from './monitor-page.ts';
@@ -87,6 +88,7 @@ export interface ResearchHttpServerOptions {
   exposeAtomicTools?: boolean;
   authToken?: string;
   reportRoot?: string;
+  domainResolver?: DomainResolver;
 }
 
 const REPORT_FILES = { json: 'report.json', markdown: 'report.md', html: 'report.html' } as const;
@@ -120,6 +122,7 @@ function authorized(request: IncomingMessage, expectedToken: string | undefined)
 
 export function createResearchHttpServer(dependencies: ResearchAgentDependencies, runManager?: ResearchRunManager, options: ResearchHttpServerOptions = {}): Server {
   const exposeAtomicTools = options.exposeAtomicTools === true;
+  const domainResolver = options.domainResolver;
   const server = createServer(async (request, response) => {
     try {
       const parsedUrl = new URL(request.url ?? '/', 'http://nano-researcher.invalid');
@@ -195,10 +198,10 @@ export function createResearchHttpServer(dependencies: ResearchAgentDependencies
         return json(response, 200, await dependencies.fetch.fetch(url));
       }
       if (typeof parsed.question !== 'string' || !parsed.question.trim()) return json(response, 400, { error: 'question_required' });
-      const task = { question: parsed.question.trim(), ...(parsed.options !== undefined ? { options: parseOptions(parsed.options) } : {}) };
+      const task = { question: parsed.question.trim(), ...(typeof parsed.domain === 'string' && parsed.domain.trim() ? { domain: parsed.domain.trim() } : {}), ...(parsed.options !== undefined ? { options: parseOptions(parsed.options) } : {}) };
       validateResearchTask(task);
       if (runManager) return json(response, 202, runManager.start(task));
-      const result = await runAgent(task, dependencies);
+      const result = await runAgent(task, dependencies, { ...(domainResolver ? { domainResolver } : {}) });
       return json(response, result.status === 'failed' ? 422 : 200, result);
     } catch (error) {
       return json(response, 400, { error: error instanceof Error ? error.message : String(error) });

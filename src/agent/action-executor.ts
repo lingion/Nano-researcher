@@ -76,7 +76,7 @@ export async function executeAgentActions(
     const startedAt = Date.now();
     let response: SearchResponse;
     try {
-      response = await dependencies.search.search(action.query, { signal });
+      response = await dependencies.search.search(action.query, { signal, ...(state.task.options?.engineScope ? { engineScope: state.task.options.engineScope } : {}) });
     } catch (error) {
       throwCancelledAfterRequest(signal, dependencies, 'search.cancelled', { query: action.query });
       response = {

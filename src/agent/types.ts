@@ -11,6 +11,14 @@ export type ToolOutcome =
 
 export interface ResearchTask {
   question: string;
+  /**
+   * Domain name (e.g. "general", "policy", "medical"). When set, the runtime
+   * resolves it through a DomainResolver to a system prompt and optional engine
+   * scope / completion defaults. Leaving it unset uses the generic default
+   * prompt, which keeps the path domain-agnostic — the runtime never infers a
+   * domain from the question text.
+   */
+  domain?: string;
   options?: {
     maxIterations?: number;
     completionMode?: 'target_results' | 'rounds';
@@ -21,6 +29,13 @@ export interface ResearchTask {
     maxFetchActionsPerTurn?: number;
     locale?: string;
     outputFormat?: 'json' | 'markdown';
+    /**
+     * Restricts the Auto engine batch to engines whose `name` is listed here,
+     * or whose `capabilities` intersect the list when an entry is a capability
+     * tag (e.g. "chinese-web", "general-web"). Defaults to all builtin
+     * engines. Acts as a mechanical transport filter, not a relevance judge.
+     */
+    engineScope?: string[];
   };
 }
 

@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { createGenericFetchProvider, createGenericLlmProvider, createGenericSearchProvider } from '../../app/create-generic-dependencies.ts';
+import { createGenericFetchProvider, createGenericLlmProvider, createGenericSearchProvider, createGenericDomainResolver } from '../../app/create-generic-dependencies.ts';
 import { createResearchMcpHandlers } from './tools.ts';
 import { parseResearchRunTimeoutMs } from '../../app/research-deadline.ts';
 
@@ -16,6 +16,7 @@ const researchOptionsSchema = {
     minFetchedPages: { type: 'integer', minimum: 1, maximum: 100 },
     maxSearchActionsPerTurn: { type: 'integer', minimum: 1, maximum: 8 },
     maxFetchActionsPerTurn: { type: 'integer', minimum: 1, maximum: 8 },
+    engineScope: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 64 }, minItems: 1, description: 'Restrict Auto to engines by name or capability tag (e.g. "baidu", "chinese-web"). Omit for all builtin engines.' },
     locale: { type: 'string', minLength: 1, maxLength: 100 },
     outputFormat: { type: 'string', enum: ['json', 'markdown'] },
   },
@@ -23,7 +24,7 @@ const researchOptionsSchema = {
 
 export function genericResearchToolDefinitions(exposeAtomicTools = false): Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> {
   const tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> = [
-    { name: 'research', description: 'Run an autonomous research task through the unified Auto search interface.', inputSchema: { type: 'object', additionalProperties: false, properties: { question: { type: 'string', minLength: 1 }, options: researchOptionsSchema }, required: ['question'] } },
+    { name: 'research', description: 'Run an autonomous research task through the unified Auto search interface.', inputSchema: { type: 'object', additionalProperties: false, properties: { question: { type: 'string', minLength: 1 }, domain: { type: 'string', minLength: 1, maxLength: 100, description: 'Optional domain slug matching a domains/<domain>.md document that supplies the system prompt and optional engine scope. Omit for the generic default.' }, options: researchOptionsSchema }, required: ['question'] } },
   ];
   if (exposeAtomicTools) tools.push(
     { name: 'search', description: 'Diagnostic atomic search.', inputSchema: { type: 'object', additionalProperties: false, properties: { query: { type: 'string', minLength: 1 } }, required: ['query'] } },
@@ -39,7 +40,7 @@ export function createGenericMcpServer(env: NodeJS.ProcessEnv = process.env): Se
     llm: createGenericLlmProvider(env),
     search: createGenericSearchProvider(),
     fetch: createGenericFetchProvider(),
-  }, { runTimeoutMs });
+  }, { runTimeoutMs, domainResolver: createGenericDomainResolver(env) });
   const server = new Server({ name: 'nano-researcher', version: '0.1.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: genericResearchToolDefinitions(exposeAtomicTools),

@@ -9,6 +9,8 @@ import { AutoSearchProvider } from '../search/auto/auto.ts';
 import { builtInSearchEngines } from '../search/auto/providers/engines.ts';
 import { createPlaywrightBrowserAdapter } from '../fetch-fusion/browser-fetch.ts';
 import { assertSafeResolvedNetworkTarget, safeFetchWithRedirects } from '../fetch-fusion/network-safety.ts';
+import path from 'node:path';
+import { createFileDomainResolver, type DomainResolver } from '../domain/resolver.ts';
 
 export interface GenericRuntimeEnv {
   NANOCLAW_BASE_URL?: string;
@@ -49,6 +51,18 @@ export function createGenericLlmProvider(env: GenericRuntimeEnv = process.env): 
     maxAttempts,
     retryDelayMs,
   });
+}
+
+/**
+ * Filesystem-backed domain resolver for the generic runtime. Reads domain
+ * documents from RESEARCH_DOMAINS_DIR (default: the "domains" directory next
+ * to the process cwd). The resolver is optional in the agent loop — a task
+ * without a `domain` field never touches it, so the generic path stays
+ * domain-agnostic.
+ */
+export function createGenericDomainResolver(env: NodeJS.ProcessEnv = process.env): DomainResolver {
+  const root = env.RESEARCH_DOMAINS_DIR ?? path.resolve('domains');
+  return createFileDomainResolver(root);
 }
 
 export function createGenericSearchProvider(): SearchProvider {

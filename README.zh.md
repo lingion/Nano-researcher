@@ -76,6 +76,52 @@ Generic 不能把政策领域、官方性、灰度测试、地理范围、目标
 content length、freshness signal 和 extraction warning，但不能根据这些事实越权替模型
 下业务结论。
 
+### 领域化:领域文档(Domain)
+
+Generic Agent 的领域知识只存在于 system prompt,不存在于代码。这是「模型是业务决策者,
+系统只负责技术事实」这条边界规则的直接推论:领域(政策?医疗?法律?)不会写死在运行时里。
+
+因此「把通用研究 agent 变成特定领域工具」= 换一份 system prompt。框架层一行都不用改。
+领域以可移植文档形式存在 `domains/` 目录:
+
+```text
+domains/
+├── general.md   # 默认通用研究(不指定 domain 时用它)
+└── policy.md    # 中国产品/工具雷达(限定国内引擎 + 凑够 10 条证据)
+```
+
+每个文档是一个可选 YAML frontmatter + Markdown 正文:
+
+```markdown
+---
+engineScope: [baidu, sogou, 360, quark, bing]
+completionMode: target_results
+targetResultCount: 10
+evidenceRequired: true
+---
+
+(Markdown 正文 = system prompt)
+```
+
+- **正文**是权威的 system prompt,逐字注入 agent。
+- **frontmatter** 是可选的机械配置:`engineScope`(按引擎名或 capability tag 收窄 Auto 批次)、
+  完成契约默认值(`completionMode`/`targetResultCount`/`evidenceRequired`/`minFetchedPages`)。
+  调用方显式传的值永远覆盖 frontmatter 默认值。
+
+三入口统一通过 task 的 `domain` 字段选择领域:
+
+| 入口 | 用法 |
+| --- | --- |
+| CLI | `RESEARCH_DOMAIN=policy pnpm start`(或 `RESEARCH_DOMAINS_DIR` 指向自定义目录) |
+| HTTP | `POST /v1/research` body 加 `"domain": "policy"` |
+| MCP | `research({ question, domain: "policy" })` |
+
+任务级 `options.engineScope` 也可以不依赖领域文档、单独按调用收窄搜索。未指定 domain 时,
+runtime 用通用默认 prompt,且**绝不从问题文本推断领域**——保持 generic 路径领域无关。
+
+新增领域只需写一个 `domains/<name>.md`,无需改代码、无需重新构建。这是领域化唯一的扩展点;
+不要为了某个研究主题在 generic 主链里加意图补丁。
+
 ### Legacy 边界
 
 旧的 policy/early-access runtime 仍然保留，是为了兼容历史命令、fixture 和已有运行结果。

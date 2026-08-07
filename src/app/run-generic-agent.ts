@@ -1,7 +1,7 @@
 import 'dotenv/config';
 
 import { runAgent } from './run-agent.ts';
-import { createGenericFetchProvider, createGenericLlmProvider, createGenericSearchProvider } from './create-generic-dependencies.ts';
+import { createGenericDomainResolver, createGenericFetchProvider, createGenericLlmProvider, createGenericSearchProvider } from './create-generic-dependencies.ts';
 import type { ResearchTask } from '../agent/types.ts';
 import { validateResearchTask } from '../agent/task-validation.ts';
 import { parseResearchRunTimeoutMs } from './research-deadline.ts';
@@ -25,6 +25,8 @@ function booleanEnv(env: NodeJS.ProcessEnv, name: string, fallback: boolean): bo
 export function parseGenericCliRun(env: NodeJS.ProcessEnv = process.env): { task: ResearchTask; timeoutMs: number } {
   const question = env.RESEARCH_QUESTION;
   if (!question?.trim()) throw new Error('RESEARCH_QUESTION is required.');
+  const domain = env.RESEARCH_DOMAIN?.trim();
+  if (domain && !/^[a-z0-9][a-z0-9-]*$/i.test(domain)) throw new Error('RESEARCH_DOMAIN must be a lowercase alphanumeric slug (dashes allowed), e.g. "policy" or "medical".');
   const mode = env.RESEARCH_COMPLETION_MODE;
   if (mode !== undefined && mode !== 'target_results' && mode !== 'rounds') throw new Error('RESEARCH_COMPLETION_MODE must be target_results or rounds.');
   const completionMode: 'target_results' | 'rounds' | undefined = mode;
@@ -36,6 +38,7 @@ export function parseGenericCliRun(env: NodeJS.ProcessEnv = process.env): { task
   if (outputFormat !== undefined && outputFormat !== 'json' && outputFormat !== 'markdown') throw new Error('RESEARCH_OUTPUT_FORMAT must be json or markdown.');
   const task: ResearchTask = {
     question: question.trim(),
+    ...(domain ? { domain } : {}),
     options: {
       maxIterations,
       ...(completionMode ? { completionMode } : {}),
@@ -62,7 +65,7 @@ export async function main(): Promise<void> {
       llm: createGenericLlmProvider(),
       search: createGenericSearchProvider(),
       fetch: fetchProvider,
-    }, { signal: controller.signal });
+    }, { signal: controller.signal, domainResolver: createGenericDomainResolver() });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } finally {
     clearTimeout(timeout);

@@ -3,14 +3,15 @@ import type { ResearchAgentDependencies } from '../../agent/agent-loop.ts';
 import type { ResearchTask } from '../../agent/types.ts';
 import { validateResearchTask } from '../../agent/task-validation.ts';
 import { createResearchDeadline } from '../../app/research-deadline.ts';
+import type { DomainResolver } from '../../domain/resolver.ts';
 
-export function createResearchMcpHandlers(dependencies: ResearchAgentDependencies, options: { runTimeoutMs?: number } = {}) {
+export function createResearchMcpHandlers(dependencies: ResearchAgentDependencies, options: { runTimeoutMs?: number; domainResolver?: DomainResolver } = {}) {
   return {
     research: async (input: ResearchTask, requestOptions: { signal?: AbortSignal } = {}) => {
       validateResearchTask(input);
       const deadline = options.runTimeoutMs === undefined ? undefined : createResearchDeadline(options.runTimeoutMs, requestOptions.signal);
       try {
-        return await runAgent(input, dependencies, { signal: deadline?.signal ?? requestOptions.signal });
+        return await runAgent(input, dependencies, { signal: deadline?.signal ?? requestOptions.signal, ...(options.domainResolver ? { domainResolver: options.domainResolver } : {}) });
       } finally {
         deadline?.clear();
       }

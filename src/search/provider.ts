@@ -4,7 +4,7 @@ export interface SearchProvider {
   readonly name: string;
   readonly capabilities?: readonly string[];
   readonly maxConcurrency?: number;
-  search(query: string, options?: { signal?: AbortSignal }): Promise<SearchResponse>;
+  search(query: string, options?: { signal?: AbortSignal; engineScope?: string[] }): Promise<SearchResponse>;
 }
 
 export interface SearchProviderDescriptor {

@@ -30,3 +30,17 @@ test('generic CLI rejects invalid and silently unexecutable configuration', () =
     { ...base, RESEARCH_RUN_TIMEOUT_MS: 'Infinity' },
   ]) assert.throws(() => parseGenericCliRun(env), /RESEARCH_/);
 });
+
+test('generic CLI carries RESEARCH_DOMAIN onto the task when it is a valid slug', () => {
+  const parsed = parseGenericCliRun({ RESEARCH_QUESTION: 'q', RESEARCH_DOMAIN: 'policy' });
+  assert.equal(parsed.task.domain, 'policy');
+});
+
+test('generic CLI rejects a malformed RESEARCH_DOMAIN', () => {
+  assert.throws(() => parseGenericCliRun({ RESEARCH_QUESTION: 'q', RESEARCH_DOMAIN: 'Bad Slug' }), /RESEARCH_DOMAIN/);
+});
+
+test('generic CLI leaves domain unset when RESEARCH_DOMAIN is absent', () => {
+  const parsed = parseGenericCliRun({ RESEARCH_QUESTION: 'q' });
+  assert.equal(parsed.task.domain, undefined);
+});

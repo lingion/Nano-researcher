@@ -20,7 +20,7 @@ export class AutoSearchProvider {
 
   constructor(private readonly options: AutoOptions) {}
 
-  async search(query: string, options: { signal?: AbortSignal } = {}): Promise<SearchResponse> {
+  async search(query: string, options: { signal?: AbortSignal; engineScope?: string[] } = {}): Promise<SearchResponse> {
     const started = Date.now();
     const controller = new AbortController();
     const deadlineMs = this.options.deadlineMs ?? DEFAULT_DEADLINE_MS;
@@ -35,7 +35,8 @@ export class AutoSearchProvider {
     const batches: string[][] = [];
     const limit = this.options.limit ?? 10;
     try {
-      const eligible = this.options.engines.slice(0, maxEngineCalls);
+      const scoped = selectEngines(this.options.engines, options.engineScope);
+      const eligible = scoped.slice(0, maxEngineCalls);
       if (eligible.length && !controller.signal.aborted) {
         batches.push(eligible.map((engine) => engine.name));
         const deadlineAt = started + deadlineMs;
@@ -61,7 +62,7 @@ export class AutoSearchProvider {
       const diagnostics: AutoDiagnostics = {
         attemptedEngines: engineResults.map((item) => item.engine),
         engineResults,
-        stoppedReason: controller.signal.aborted ? (options.signal?.aborted ? 'cancelled' : 'deadline') : engineResults.length >= maxEngineCalls && maxEngineCalls < this.options.engines.length ? 'engine_budget' : 'all_engines',
+        stoppedReason: controller.signal.aborted ? (options.signal?.aborted ? 'cancelled' : 'deadline') : engineResults.length >= maxEngineCalls && maxEngineCalls < scoped.length ? 'engine_budget' : 'all_engines',
         batches,
         durationMs: Date.now() - started,
         uniqueResultCount: ranked.results.length,
@@ -210,6 +211,19 @@ function boundedEngineCalls(value: number | undefined, engineCount: number): num
   const requested = Number(value ?? DEFAULT_MAX_ENGINE_CALLS);
   const bounded = Number.isFinite(requested) ? Math.floor(requested) : DEFAULT_MAX_ENGINE_CALLS;
   return Math.min(engineCount, Math.max(0, bounded));
+}
+
+/**
+ * Selects engines matching a scope. Each scope entry matches an engine by name
+ * or by capability tag (e.g. "chinese-web", "general-web"). An undefined or
+ * empty scope returns all engines, preserving the default behavior. Order
+ * follows the original engine registration; scope never reorders or re-ranks.
+ * This is a mechanical transport filter, not a relevance or authority decision.
+ */
+function selectEngines(engines: AutoEngine[], scope: string[] | undefined): AutoEngine[] {
+  if (!scope || scope.length === 0) return engines;
+  const wanted = new Set(scope.map((entry) => entry.trim().toLowerCase()).filter((entry) => entry.length > 0));
+  return engines.filter((engine) => wanted.has(engine.name.toLowerCase()) || engine.capabilities.some((capability) => wanted.has(capability.toLowerCase())));
 }
 
 function cancelledResponse(durationMs: number): SearchResponse {
