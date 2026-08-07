@@ -1,5 +1,4 @@
 ---
-engineScope: [baidu, sogou, 360, quark, bing]
 completionMode: target_results
 targetResultCount: 10
 evidenceRequired: true

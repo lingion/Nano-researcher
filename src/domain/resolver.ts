@@ -143,6 +143,27 @@ function listDomainSlugs(root: string): Promise<string[]> {
 }
 
 /**
+ * Reads and parses a domain document. Returns the prompt, optional engine
+ * scope, and optional defaults; returns undefined when the document is absent
+ * so callers can fall back. Shared by the general and named-domain paths.
+ */
+async function tryReadDomain(root: string, slug: string): Promise<{ systemPrompt: string; engineScope?: string[]; defaults?: DomainDefaults } | undefined> {
+  let text: string;
+  try {
+    text = await readFile(path.join(root, `${slug}.md`), 'utf8');
+  } catch {
+    return undefined;
+  }
+  const { frontmatter, body } = parseDomainDocument(text);
+  const defaults = toDomainDefaults(frontmatter);
+  return {
+    systemPrompt: body || GENERAL_SYSTEM_PROMPT,
+    ...(frontmatter.engineScope ? { engineScope: frontmatter.engineScope } : {}),
+    ...(defaults ? { defaults } : {}),
+  };
+}
+
+/**
  * Filesystem-backed resolver. Reads `<root>/<domain>.md`. An absent domain (or
  * the literal "general") resolves to the generic default prompt with no engine
  * scope and no defaults, so the generic path stays domain-agnostic.
@@ -151,27 +172,20 @@ export function createFileDomainResolver(root: string, fallbackPrompt: string = 
   return {
     async resolve(domain: string | undefined): Promise<ResolvedDomain> {
       const slug = domain?.trim();
+      // An absent or "general" domain loads domains/general.md when it exists,
+      // so a deployment can make a specific domain the default by overwriting
+      // general.md. If that file is absent, fall back to the generic prompt.
       if (!slug || slug === 'general') {
+        const general = await tryReadDomain(root, 'general');
+        if (general) return { domain: 'general', ...general };
         return { domain: 'general', systemPrompt: fallbackPrompt };
       }
       if (!/^[a-z0-9][a-z0-9-]*$/i.test(slug)) {
         throw new Error(`invalid_domain: ${slug} is not a lowercase alphanumeric slug`);
       }
-      const file = path.join(root, `${slug}.md`);
-      let text: string;
-      try {
-        text = await readFile(file, 'utf8');
-      } catch {
-        throw new Error(`unknown_domain: no document found for "${slug}" at ${file}`);
-      }
-      const { frontmatter, body } = parseDomainDocument(text);
-      const defaults = toDomainDefaults(frontmatter);
-      return {
-        domain: slug,
-        systemPrompt: body || fallbackPrompt,
-        ...(frontmatter.engineScope ? { engineScope: frontmatter.engineScope } : {}),
-        ...(defaults ? { defaults } : {}),
-      };
+      const parsed = await tryReadDomain(root, slug);
+      if (!parsed) throw new Error(`unknown_domain: no document found for "${slug}" at ${path.join(root, `${slug}.md`)}`);
+      return { domain: slug, ...parsed };
     },
     list: () => listDomainSlugs(root),
   };

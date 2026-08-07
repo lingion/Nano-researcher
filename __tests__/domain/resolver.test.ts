@@ -42,7 +42,7 @@ test('parseDomainDocument ignores unknown frontmatter keys without failing', () 
   assert.equal(body, 'body text');
 });
 
-test('file resolver returns the general fallback prompt for an absent or general domain', async () => {
+test('file resolver returns the generic fallback prompt when general.md is absent', async () => {
   await withDomainDir({}, async (root) => {
     const resolver = createFileDomainResolver(root, 'fallback prompt');
     const absent = await resolver.resolve(undefined);
@@ -52,6 +52,21 @@ test('file resolver returns the general fallback prompt for an absent or general
     assert.equal(general.systemPrompt, 'fallback prompt');
     assert.equal(general.engineScope, undefined);
     assert.equal(general.defaults, undefined);
+  });
+});
+
+test('file resolver loads domains/general.md as the default when it exists', async () => {
+  await withDomainDir({
+    'general.md': '---\ntargetResultCount: 3\n---\nYou are the customized default agent.',
+    'law.md': 'You are a legal agent.',
+  }, async (root) => {
+    const resolver = createFileDomainResolver(root, 'fallback');
+    const absent = await resolver.resolve(undefined);
+    assert.equal(absent.domain, 'general');
+    assert.equal(absent.systemPrompt, 'You are the customized default agent.');
+    assert.equal(absent.defaults?.targetResultCount, 3);
+    const explicit = await resolver.resolve('general');
+    assert.equal(explicit.systemPrompt, 'You are the customized default agent.');
   });
 });
 
@@ -122,7 +137,7 @@ test('shipped domains parse and resolve against the repository domains directory
   const policy = await resolver.resolve('policy');
   assert.equal(policy.domain, 'policy');
   assert.ok(policy.systemPrompt.length > 100);
-  assert.ok(policy.engineScope!.includes('baidu'));
+  assert.equal(policy.engineScope, undefined);
   assert.equal(policy.defaults!.completionMode, 'target_results');
   assert.equal(policy.defaults!.targetResultCount, 10);
   assert.equal(policy.defaults!.evidenceRequired, true);

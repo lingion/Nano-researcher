@@ -27,7 +27,7 @@ export async function runAgent(
   // run: it supplies a system prompt, gap-fills completion defaults (caller
   // values win), and narrows the engine batch. An explicit systemPrompt short-
   // circuits resolution so callers keep direct control.
-  if (options.domainResolver && task.domain && !options.systemPrompt) {
+  if (options.domainResolver && !options.systemPrompt) {
     const resolved = await options.domainResolver.resolve(task.domain);
     const withDefaults = resolved.defaults ? applyDomainDefaults(task, resolved.defaults) : task;
     const mergedOptions = { ...(withDefaults.options ?? {}) };
