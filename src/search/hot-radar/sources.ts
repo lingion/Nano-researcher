@@ -313,12 +313,9 @@ function unwrapCdata(s: string): string {
 }
 
 async function srcRss(url: string, name: string, limit: number = DEFAULT_LIMIT, atom = false): Promise<HotRadarRecord[]> {
-  let text: string;
-  try {
-    text = await fetchText(url);
-  } catch {
-    return [];
-  }
+  // fetch 失败向上抛,由 collectAllSources 捕获并记入 failed(比 py 版静默 None 的失败信息更可诊断);
+  // 解析层语义与 py ET 版一致:无 title 的条目跳过,结果截断到 limit。
+  const text = await fetchText(url);
   const entries = text.match(atom ? /<entry[\s\S]*?<\/entry>/g : /<item[\s\S]*?<\/item>/g) ?? [];
   const out: HotRadarRecord[] = [];
   for (const entry of entries) {
