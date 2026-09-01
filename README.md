@@ -369,9 +369,42 @@ Auto is the only public search entry in the Generic product. Providers from
 other projects are adapted into this repository's provider contract; external
 projects are not runtime dependencies of Generic.
 
+### Hot-board provider (hot-radar)
+
+The default Generic search provider is `hot-radar`
+(`src/search/hot-radar/provider.ts`), selected by `createGenericSearchProvider`
+in `src/app/create-generic-dependencies.ts`. Each search collects 21 keyless,
+login-free sources in parallel (each source contributes up to 10 entries) and
+aggregates them into one result set:
+
+- Chinese hot boards: 百度热搜, 贴吧, 今日头条, 知乎热榜, IT之家, 澎湃新闻, 掘金热榜,
+  CSDN热榜;
+- uapis.cn board aggregations: uapis-微博, uapis-知乎, uapis-抖音, uapis-B站,
+  uapis-小红书;
+- developer boards: HuggingFace镜像 (trending models via hf-mirror.com),
+  HackerNews, dev.to, GitHub本周新星 (new high-star repositories of the past
+  week);
+- RSS/Atom feeds: 量子位RSS, InfoQ中文, Solidot, ProductHunt.
+
+The query acts as a filter, not a search-engine request. The query is
+lowercased and split into whitespace-separated tokens, and an entry is kept
+when any token appears in its title; when no entry matches, the full board is
+returned instead. Output is capped at 20 results. Each result carries a
+snippet of the form `[来源] | 热度=N`; the heat term is omitted when a source
+does not report one, and a source-specific extra (for example comment counts)
+may follow.
+
+A single source that fails or returns nothing is skipped and recorded in the
+collector's `failed[]` list; it never fails the whole search. `POST /v1/search`
+(when enabled with `RESEARCH_EXPOSE_ATOMIC_TOOLS=1`) returns this aggregation
+directly, and the Generic Agent's search action uses the same provider.
+
 ### Built-in provider registry
 
-The registry is `src/search/auto/providers/engines.ts`.
+The registry is `src/search/auto/providers/engines.ts`. The engine files remain
+in the repository, but this built-in search-engine chain is no longer wired
+into the Generic provider; the default Generic search provider is the hot-radar
+board documented above.
 
 | Provider | Capability tags | Current implementation |
 | --- | --- | --- |
