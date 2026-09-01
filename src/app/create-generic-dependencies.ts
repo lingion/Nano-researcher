@@ -5,8 +5,7 @@ import type { FetchProvider } from '../fetch/provider.ts';
 import type { FetchedPageRecord } from '../fetch-fusion/types.ts';
 import type { SearchProvider } from '../search/provider.ts';
 import { closeHtmlExtractionPool, fetchWithLocalPrimary, isWeakFetchedContent } from '../fetch-fusion/local-fetch-primary.ts';
-import { AutoSearchProvider } from '../search/auto/auto.ts';
-import { builtInSearchEngines } from '../search/auto/providers/engines.ts';
+import { HotRadarSearchProvider } from '../search/hot-radar/provider.ts';
 import { createPlaywrightBrowserAdapter } from '../fetch-fusion/browser-fetch.ts';
 import { assertSafeResolvedNetworkTarget, safeFetchWithRedirects } from '../fetch-fusion/network-safety.ts';
 import path from 'node:path';
@@ -66,7 +65,7 @@ export function createGenericDomainResolver(env: NodeJS.ProcessEnv = process.env
 }
 
 export function createGenericSearchProvider(): SearchProvider {
-  return new AutoSearchProvider({ engines: builtInSearchEngines, maxEngineCalls: 8, deadlineMs: 15_000, limit: 12 });
+  return new HotRadarSearchProvider({ limit: 20 });
 }
 
 export function classifyGenericFetchPage(page: Pick<FetchedPageRecord, 'statusCode' | 'title' | 'content'>): {
