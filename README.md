@@ -402,9 +402,12 @@ directly, and the Generic Agent's search action uses the same provider.
 ### Built-in provider registry
 
 The registry is `src/search/auto/providers/engines.ts`. The engine files remain
-in the repository, but this built-in search-engine chain is no longer wired
-into the Generic provider; the default Generic search provider is the hot-radar
-board documented above.
+in the repository as a registry reference, but this built-in search-engine
+chain is no longer wired into the Generic provider; the default Generic search
+provider is the hot-radar board documented above. The composition tuning below
+applies only when the Auto batch runner is instantiated by its own callers, not
+to the current Generic path, which has no engine chain and therefore no
+`maxEngineCalls`, deadline, or per-provider retry tuning.
 
 | Provider | Capability tags | Current implementation |
 | --- | --- | --- |
@@ -417,7 +420,7 @@ board documented above.
 | `naver` | `general-web`, `korean-web` | Adapted HTML provider |
 | `dogpile` | `general-web`, `multi-source` | Adapted multi-source HTML provider |
 
-The default Generic composition uses:
+Historical Auto batch composition (not part of the current Generic path):
 
 - `maxEngineCalls = 8`;
 - `deadlineMs = 15_000`;
@@ -425,11 +428,6 @@ The default Generic composition uses:
 - one bounded batch, with all eligible providers started together;
 - per-provider request timeout at most 5 seconds in the built-in engine context;
 - one provider-level retry with a 120 ms delay where the provider supports it.
-
-Auto does not issue a second hidden batch because result count is low. Another
-search action is the Agent's decision in a later turn. This is intentional: it
-keeps latency and control visible and avoids a provider loop hidden inside the
-search layer.
 
 ### Provider normalization
 
